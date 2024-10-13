@@ -67,6 +67,7 @@ Display help
 To create/install a validator node. Fresh first-time install
 ```bash
 ./node-setup.sh --validator 1
+source ~/.bashrc
 ```
 To run the validator node
 ```bash
@@ -75,6 +76,7 @@ To run the validator node
 To create/install a RPC node. Fresh first-time install
 ```bash
 ./node-setup.sh --rpc
+source ~/.bashrc
 ```
 To run the RPC node
 ```bash
