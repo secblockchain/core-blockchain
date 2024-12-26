@@ -611,8 +611,10 @@ func (c *Congress) Finalize(chain consensus.ChainHeaderReader, header *types.Hea
 
 	// Set the base fee manually for EIP-1559 blocks
     // Static base fee = 476,190 gwei
+	parent := chain.GetHeader(header.ParentHash, header.Number.Uint64()-1)
     if chain.Config().IsLondon(header.Number) { // EIP-1559 is active
-		header.BaseFee = big.NewInt(476190000000000) // 476,190 gwei
+		// header.BaseFee = big.NewInt(476190000000000) // 476,190 gwei
+		header.BaseFee = misc.CalcBaseFee(chain.Config(), parent)
 	}
 
 	if header.Difficulty.Cmp(diffInTurn) != 0 {
@@ -756,8 +758,10 @@ func (c *Congress) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header
 
 	// Set the base fee manually for EIP-1559 blocks
     // Static base fee = 476,190 gwei
+	parent := chain.GetHeader(header.ParentHash, header.Number.Uint64()-1)
     if chain.Config().IsLondon(header.Number) { // EIP-1559 is active
-		header.BaseFee = big.NewInt(476190000000000) // 476,190 gwei
+		// header.BaseFee = big.NewInt(476190000000000) // 476,190 gwei
+		header.BaseFee = misc.CalcBaseFee(chain.Config(), parent)
 	}
 
 	// punish validator if necessary
