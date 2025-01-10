@@ -315,28 +315,28 @@ finalize(){
   chaindataPath=$nodePath/chaindata/node1/geth
   snapshotName=$nodePath/chaindata.tar.gz
 
-  # echo -e "\n\n\t${ORANGE}Removing existing chaindata, if any${NC}"
+  echo -e "\n\n\t${ORANGE}Removing existing chaindata, if any${NC}"
   
-  # rm -rf $chaindataPath/chaindata
+  rm -rf $chaindataPath/chaindata
 
-  # echo -e "\n\n\t${GREEN}Now importing the snapshot"
-  # wget https://snapshots.secexplorer.io/chaindata.tar.gz
+  echo -e "\n\n\t${GREEN}Now importing the snapshot"
+  wget https://snapshots.secexplorer.io/chaindata.tar.gz
 
-  # # Create the directory if it does not exist
-  # if [ ! -d "$chaindataPath" ]; then
-  #   mkdir -p $chaindataPath
-  # fi
+  # Create the directory if it does not exist
+  if [ ! -d "$chaindataPath" ]; then
+    mkdir -p $chaindataPath
+  fi
 
-  # # Extract archive to the correct directory
-  # tar -xvf $snapshotName -C $chaindataPath --strip-components=1
+  # Extract archive to the correct directory
+  tar -xvf $snapshotName -C $chaindataPath --strip-components=1
 
-  # # Set proper permissions
-  # echo -e "\n\n\t${GREEN}Setting directory permissions${NC}"
-  # chown -R root:root /root/core-blockchain/chaindata
-  # chmod -R 755 /root/core-blockchain/chaindata
+  # Set proper permissions
+  echo -e "\n\n\t${GREEN}Setting directory permissions${NC}"
+  chown -R root:root /root/core-blockchain/chaindata
+  chmod -R 755 /root/core-blockchain/chaindata
 
-  # echo -e "\n\n\tImport is done, now configuring sync-helper${NC}"
-  # sleep 3
+  echo -e "\n\n\tImport is done, now configuring sync-helper${NC}"
+  sleep 3
   cd $nodePath
   
 
