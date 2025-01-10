@@ -326,13 +326,14 @@ finalize(){
   wget https://snapshots.secexplorer.io/triecache.tar.gz
 
   # Create the directory if it does not exist
-  if [ ! -d "$chaindataPath" ]; then
-    mkdir -p $chaindataPath
+  if [ ! -d "$chaindataPath/chaindata" ]; then
+    mkdir -p $chaindataPath/chaindata/
+    mkdir -p $chaindataPath/triecache/
   fi
 
   # Extract archive to the correct directory
-  tar -xvf $snapshotName -C $chaindataPath --strip-components=1
-  tar -xvf $triecacheName -C $chaindataPath --strip-components=1
+  tar -xvf $snapshotName -C $chaindataPath/chaindata/ --strip-components=1
+  tar -xvf $triecacheName -C $chaindataPath/triecache/ --strip-components=1
 
   # Set proper permissions
   echo -e "\n\n\t${GREEN}Setting directory permissions${NC}"
