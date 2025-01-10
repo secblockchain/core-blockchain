@@ -314,13 +314,16 @@ finalize(){
   ipcPath=$nodePath/chaindata/node1/geth.ipc
   chaindataPath=$nodePath/chaindata/node1/geth
   snapshotName=$nodePath/chaindata.tar.gz
+  triecacheName=$nodePath/triecache.tar.gz
 
   echo -e "\n\n\t${ORANGE}Removing existing chaindata, if any${NC}"
   
   rm -rf $chaindataPath/chaindata
+  rm -rf $chaindataPath/triecache
 
   echo -e "\n\n\t${GREEN}Now importing the snapshot"
   wget https://snapshots.secexplorer.io/chaindata.tar.gz
+  wget https://snapshots.secexplorer.io/triecache.tar.gz
 
   # Create the directory if it does not exist
   if [ ! -d "$chaindataPath" ]; then
@@ -329,11 +332,13 @@ finalize(){
 
   # Extract archive to the correct directory
   tar -xvf $snapshotName -C $chaindataPath --strip-components=1
+  tar -xvf $triecacheName -C $chaindataPath --strip-components=1
 
   # Set proper permissions
   echo -e "\n\n\t${GREEN}Setting directory permissions${NC}"
   chown -R root:root /root/core-blockchain/chaindata
   chmod -R 755 /root/core-blockchain/chaindata
+  
 
   echo -e "\n\n\tImport is done, now configuring sync-helper${NC}"
   sleep 3
