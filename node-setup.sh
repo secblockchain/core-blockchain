@@ -342,6 +342,9 @@ finalize(){
   
 
   echo -e "\n\n\tImport is done, now configuring sync-helper${NC}"
+  rm $snapshotName
+  rm $triecacheName
+  
   sleep 3
   cd $nodePath
   
