@@ -45,15 +45,13 @@ func VerifyEip1559Header(config *params.ChainConfig, parent, header *types.Heade
 		return fmt.Errorf("header is missing baseFee")
 	}
 
-	// If the parent block number is <= 446163, skip base fee validation
-	// if parent.Number.Uint64() > 4046532 {
-	// 	// Verify the baseFee is correct based on the parent header.
-	// 	expectedBaseFee := CalcBaseFee(config, parent)
-	// 	if header.BaseFee.Cmp(expectedBaseFee) != 0 {
-	// 		return fmt.Errorf("invalid baseFee: have %s, want %s, parentBaseFee %s, parentGasUsed %d", 
-	// 			expectedBaseFee, header.BaseFee, parent.BaseFee, parent.GasUsed)
-	// 	}
-	// }
+	// Verify the baseFee is correct based on the parent header.
+	expectedBaseFee := CalcBaseFee(config, parent)
+	if header.BaseFee.Cmp(expectedBaseFee) != 0 {
+		return fmt.Errorf("invalid baseFee: have %s, want %s, parentBaseFee %s, parentGasUsed %d", 
+			expectedBaseFee, header.BaseFee, parent.BaseFee, parent.GasUsed)
+	}
+
 
 	return nil
 }
@@ -100,38 +98,6 @@ func FetchSEPPrice() (float64, error) {
 	return 0, fmt.Errorf("SEP_USDT price not found")
 }
 
-// // CalcBaseFee calculates the base fee based on a simple token transfer that takes at most 21,000 units of gas
-// func CalcBaseFee(config *params.ChainConfig, parent *types.Header) *big.Int {
-// 	sepPrice, err := FetchSEPPrice()
-// 	if err != nil || sepPrice <= 0 {
-// 		// Fallback to a static base fee if price fetch fails
-// 		fmt.Println("Error fetching SEP price, defaulting baseFee to 476,190 gwei:", err)
-// 		return new(big.Int).SetUint64(476190 * 1e9)
-// 	}
-
-// 	// 0.25 USD worth of SEP
-// 	usdTarget := 0.25
-
-// 	// Calculate the SEP amount needed for 0.25 USD
-// 	sepForTargetUSD := usdTarget / sepPrice
-
-// 	// Calculate the gas fee for 21,000 gas units
-// 	gasUnits := 21000
-// 	sepForGasUnits := new(big.Float).Mul(big.NewFloat(float64(gasUnits)), big.NewFloat(sepForTargetUSD / 21_000))
-
-// 	// Convert SEP to Gwei (1 SEP = 1e9 Gwei)
-// 	baseFeeInGwei := new(big.Float).Mul(sepForGasUnits, big.NewFloat(1e9))
-// 	baseFeeInt, _ := baseFeeInGwei.Int(nil) // Convert to *big.Int
-// 	fmt.Println("Base Fee Right Now: ", baseFeeInt)
-
-// 	return baseFeeInt
-// }
-
-// 30087856541
-
-
-
-// CalcBaseFee calculates the base fee in Gwei for a 0.25 USD gas cost at 21,000 gas units
 func CalcBaseFee(config *params.ChainConfig, parent *types.Header) *big.Int {
 	sepPrice, err := FetchSEPPrice()
 	if err != nil || sepPrice <= 0 {
