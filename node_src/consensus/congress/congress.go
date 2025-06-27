@@ -880,6 +880,14 @@ func (c *Congress) trySendBlockReward(chain consensus.ChainHeaderReader, header 
 		return nil
 	}
 
+	// CRITICAL FIX: Only distribute rewards if there are actual transactions to reward
+	// This prevents empty blocks from stealing accumulated fees
+	if len(addr) == 0 || len(gass) == 0 {
+		log.Warn("Attempted to distribute block rewards for empty block - potential attack blocked",
+			"block", header.Number, "coinbase", header.Coinbase, "accumulated_fees", fee)
+		return nil  // EXIT EARLY - NO FEE DISTRIBUTION
+	}
+
 	// Miner will send tx to deposit block fees to contract, add to his balance first.
 	state.AddBalance(header.Coinbase, fee)
 	// reset fee
