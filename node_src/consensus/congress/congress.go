@@ -821,8 +821,7 @@ func (c *Congress) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header
 	// do epoch thing at the end, because it will update active validators
 	if header.Number.Uint64()%c.config.Epoch == 0 {
 		if _, err := c.doSomethingAtEpoch(chain, header, state); err != nil {
-			//panic(err)
-			log.Info(err.Error())
+			return nil, nil, fmt.Errorf("failed to process epoch transition: %w", err)
 		}
 	}
 
