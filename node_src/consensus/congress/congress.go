@@ -520,17 +520,26 @@ func (c *Congress) verifySeal(chain consensus.ChainHeaderReader, header *types.H
 
     for seen, recent := range snap.Recents {
         if recent == signer {
-            var limit uint64
-			limit = uint64(len(snap.Validators)/2 + 1)
-            if len(snap.Validators) > 21 || len(snap.Validators) == 1  {
-                limit = uint64(len(snap.Validators)/2 + 1)
-            } else {  //if number > 9299500 {  // Replace 'someGivenNumber' with the actual variable or value you want to compare against
-                limit = 2
-            }
-            // Validator is among recents, only fail if the current block doesn't shift it out
-            if seen > number-limit {
-                return errors.New("signed recently location-1")
-            }
+            // var limit uint64
+			// limit = uint64(len(snap.Validators)/2 + 1)
+            // if len(snap.Validators) > 21 || len(snap.Validators) == 1  {
+            //     limit = uint64(len(snap.Validators)/2 + 1)
+            // } else {  //if number > 9299500 {  // Replace 'someGivenNumber' with the actual variable or value you want to compare against
+            //     limit = 2
+            // }
+            // // Validator is among recents, only fail if the current block doesn't shift it out
+            // if seen > number-limit {
+            //     return errors.New("signed recently location-1")
+            // }
+
+			// fix of above code
+			// Consistently use the intended signing limit
+			limit := uint64(len(snap.Validators)/2 + 1)
+
+			// Validator is among recents, only fail if the current block doesn't shift it out
+			if number > limit && seen > number-limit {
+				return errRecentlySigned
+			}
         }
     }
 
