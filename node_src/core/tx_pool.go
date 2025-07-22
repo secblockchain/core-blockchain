@@ -86,6 +86,8 @@ var (
 	// than some meaningful limit a user might use. This is not a consensus error
 	// making the transaction invalid, rather a DOS protection.
 	ErrOversizedData = errors.New("oversized data")
+
+	ErrGasLimitTooLow = errors.New("gas limit below minimum threshold")
 )
 
 var (
@@ -635,6 +637,13 @@ func (pool *TxPool) validateTx(tx *types.Transaction, local bool) error {
 	if tx.Value().Sign() < 0 {
 		return ErrNegativeValue
 	}
+
+	// Enforce minimum gas limit for pool acceptance
+	const minPoolGas uint64 = 21_000
+	if tx.Gas() < minPoolGas {
+		return ErrGasLimitTooLow
+	}
+
 	// Ensure the transaction doesn't exceed the current block limit gas.
 	if pool.currentMaxGas < tx.Gas() {
 		return ErrGasLimit
