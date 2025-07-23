@@ -174,6 +174,20 @@ func (s *Snapshot) apply(headers []*types.Header, chain consensus.ChainHeaderRea
 				newValidators[validator] = struct{}{}
 			}
 
+			commonValidators := 0
+			for oldValidator := range snap.Validators {
+				if _, exists := newValidators[oldValidator]; exists {
+					commonValidators++
+				}
+			}
+			if len(snap.Validators) > 0 && commonValidators < len(snap.Validators)/2 {
+				return nil, errors.New("validator set change too drastic - possible isolation attack")
+			}
+			if (len(newValidators) > 0 && len(newValidators) < len(snap.Validators)/2) ||
+				(len(snap.Validators) > 0 && len(newValidators) > len(snap.Validators)*2) {
+				return nil, errors.New("validator set change too drastic - possible isolation attack")
+			}
+
 			// Need to delete recorded recent seen blocks if necessary, it may pause whole chain when validators length decreases.
 			var epochLimit uint64      
 			if len(newValidators) > 21 || len(newValidators) == 1 {
