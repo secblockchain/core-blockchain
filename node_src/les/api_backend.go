@@ -194,6 +194,9 @@ func (b *LesApiBackend) GetEVM(ctx context.Context, msg core.Message, state *sta
 		if isPoSA {
 			// make sure to use parent state to avoid mix up inner cache
 			parent := b.eth.blockchain.GetHeader(header.ParentHash, header.Number.Uint64()-1)
+			if parent == nil {
+				return nil, state.Error, errors.New("parent block not found")
+			}
 			parentState := light.NewState(ctx, parent, b.eth.odr)
 			context.ExtraValidator = posa.CreateEvmExtraValidator(header, parentState)
 		}
