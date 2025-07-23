@@ -23,9 +23,11 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"hash"
+	"hash/crc32"
 	"io"
 	"io/ioutil"
 	"math/big"
@@ -85,8 +87,13 @@ func HashDataWithCache(kh KeccakState, data []byte) (h common.Hash) {
 	l := len(data)
 	// 96 is set according to txs on heco mainnet
 	if l > 0 && l <= 96 {
-		if hash := hashCache.Get(nil, data); len(hash) == 32 {
-			return common.BytesToHash(hash)
+		if cachedData := hashCache.Get(nil, data); len(cachedData) == 36 {
+			hash := cachedData[:32]
+			storedChecksum := binary.LittleEndian.Uint32(cachedData[32:])
+			if crc32.ChecksumIEEE(hash) == storedChecksum {
+				return common.BytesToHash(hash)
+			}
+			hashCache.Del(data) // Remove corrupted entry
 		}
 	}
 
@@ -100,7 +107,10 @@ func HashDataWithCache(kh KeccakState, data []byte) (h common.Hash) {
 	d.Read(h[:])
 
 	if l > 0 && l <= 96 {
-		hashCache.Set(data, h[:])
+		checksumData := make([]byte, 36) // 32 bytes hash + 4 bytes checksum
+		copy(checksumData, h[:])
+		binary.LittleEndian.PutUint32(checksumData[32:], crc32.ChecksumIEEE(h[:]))
+		hashCache.Set(data, checksumData)
 	}
 
 	return h
