@@ -635,12 +635,12 @@ func (c *Congress) Finalize(chain consensus.ChainHeaderReader, header *types.Hea
 
 	// deposit block reward if any tx exists.
 	var addr [] common.Address
-	var gass [] uint64
+	var gass []*big.Int // Use big.Int for all fee math
 
 
-	if len(*txs) > 0 {
+	if len(*txs) > 0 && len(*receipts) == len(*txs) {
 				
-		var totalGasSum uint64
+		totalGasSum := big.NewInt(0)
 
 		for i := 0; i < len(*txs); i++ {
 			TO := (*txs)[i]
@@ -651,28 +651,49 @@ func (c *Congress) Finalize(chain consensus.ChainHeaderReader, header *types.Hea
 				addr = append(addr, *TO.To())
 			}
 
-			gasFee := TO.Gas() * TO.GasPrice().Uint64()
-			gass = append(gass, gasFee)
+			used := (*receipts)[i].GasUsed
+			fee := new(big.Int).Mul(new(big.Int).SetUint64(used), TO.GasPrice())
+			gass = append(gass, fee)
 
 			// Accumulate gasFee to totalGasSum
-			totalGasSum += gasFee
+			totalGasSum.Add(totalGasSum, fee)
+		}
+
+		var actualTotalGas uint64
+		for i := 0; i < len(*receipts); i++ {
+			actualTotalGas += (*receipts)[i].GasUsed
+		}
+
+		var calculatedTotalGas uint64
+		for i := 0; i < len(*txs); i++ {
+			calculatedTotalGas += (*receipts)[i].GasUsed
+		}
+		
+		if actualTotalGas != calculatedTotalGas {
+			return errors.New("gas calculation mismatch detected")
 		}
 		
 	    fee := state.GetBalance(consensus.FeeRecoder)
 
-		feeUint64 := fee.Uint64()
-
-		if totalGasSum > feeUint64 {
+		// If the totalGasSum is greater than the actual fee pool, scale down proportionally
+		if totalGasSum.Cmp(fee) > 0 && totalGasSum.Cmp(big.NewInt(0)) > 0 {
 		
-			percentDifference := float64(totalGasSum-feeUint64) / float64(totalGasSum) * 100
+			deficit := new(big.Int).Sub(totalGasSum, fee)
 
 			for i := 0; i < len(gass); i++ {
-				decreaseAmount := uint64(float64(gass[i]) * (percentDifference / 100.0))
-				gass[i] -= decreaseAmount
+				// decreaseAmount = gass[i] * deficit / totalGasSum
+				decreaseAmount := new(big.Int).Div(new(big.Int).Mul(gass[i], deficit), totalGasSum)
+				gass[i].Sub(gass[i], decreaseAmount)
 			}
 		}
-	    	
-		if err := c.trySendBlockReward(chain, header, state,addr,gass); err != nil {
+	    
+		// Convert gass []*big.Int to []uint64 for trySendBlockReward
+    	gassUint := make([]uint64, len(gass))
+		for i := range gass {
+			gassUint[i] = gass[i].Uint64()
+		}
+
+		if err := c.trySendBlockReward(chain, header, state,addr,gassUint); err != nil {
 			//panic(err)
 			log.Info(err.Error())
 		}
@@ -773,13 +794,13 @@ func (c *Congress) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header
 
 	// deposit block reward if any tx exists.
 	var addr [] common.Address
-	var gass [] uint64
+	var gass []*big.Int // Use big.Int for all fee math
 	//addr = new[len(txs)]
 	
 	
-	if len(txs) > 0 {
+	if len(txs) > 0 && len(receipts) == len(txs) {
 				
-		var totalGasSum uint64
+		totalGasSum := big.NewInt(0)
 
 		for i := 0; i < len(txs); i++ {
 			TO := txs[i]
@@ -790,28 +811,48 @@ func (c *Congress) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header
 				addr = append(addr, *TO.To())
 			}
 
-			gasFee := TO.Gas() * TO.GasPrice().Uint64()
-			gass = append(gass, gasFee)
+			used := (receipts)[i].GasUsed
+			fee := new(big.Int).Mul(new(big.Int).SetUint64(used), TO.GasPrice())
+			gass = append(gass, fee)
 
 			// Accumulate gasFee to totalGasSum
-			totalGasSum += gasFee
+			totalGasSum.Add(totalGasSum, fee)
 		}
 		
-	    fee := state.GetBalance(consensus.FeeRecoder)
+		var actualTotalGas uint64
+		for i := 0; i < len(receipts); i++ {
+			actualTotalGas += receipts[i].GasUsed
+		}
 
-		feeUint64 := fee.Uint64()
-
-		if totalGasSum > feeUint64 {
+		var calculatedTotalGas uint64
+		for i := 0; i < len(txs); i++ {
+			calculatedTotalGas += receipts[i].GasUsed
+		}
 		
-			percentDifference := float64(totalGasSum-feeUint64) / float64(totalGasSum) * 100
+		if actualTotalGas != calculatedTotalGas {
+			return nil, nil, errors.New("gas calculation mismatch detected")
+		}
+
+	    fee := state.GetBalance(consensus.FeeRecoder)
+		// If the totalGasSum is greater than the actual fee pool, scale down proportionally
+		if totalGasSum.Cmp(fee) > 0 && totalGasSum.Cmp(big.NewInt(0)) > 0 {
+		
+			deficit := new(big.Int).Sub(totalGasSum, fee)
 
 			for i := 0; i < len(gass); i++ {
-				decreaseAmount := uint64(float64(gass[i]) * (percentDifference / 100.0))
-				gass[i] -= decreaseAmount
+				// decreaseAmount = gass[i] * deficit / totalGasSum
+				decreaseAmount := new(big.Int).Div(new(big.Int).Mul(gass[i], deficit), totalGasSum)
+				gass[i].Sub(gass[i], decreaseAmount)
 			}
 		}
+
+		// Convert gass []*big.Int to []uint64 for trySendBlockReward
+		gassUint := make([]uint64, len(gass))
+		for i := range gass {
+			gassUint[i] = gass[i].Uint64()
+		}
 	
-		if err := c.trySendBlockReward(chain, header, state,addr,gass); err != nil {
+		if err := c.trySendBlockReward(chain, header, state,addr,gassUint); err != nil {
 			//panic(err)
 			log.Info(err.Error())
 
