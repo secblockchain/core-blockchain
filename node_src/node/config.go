@@ -132,6 +132,9 @@ type Config struct {
 	// exposed.
 	HTTPModules []string
 
+	// HTTPAllowInsecureUnlock allows exposing non-public APIs over HTTP if set to true.
+	HTTPAllowInsecureUnlock bool `toml:",omitempty"`
+
 	// HTTPTimeouts allows for customization of the timeout values used by the HTTP RPC
 	// interface.
 	HTTPTimeouts rpc.HTTPTimeouts
@@ -160,6 +163,9 @@ type Config struct {
 	// If the module list is empty, all RPC API endpoints designated public will be
 	// exposed.
 	WSModules []string
+
+	// WSAllowInsecureUnlock allows exposing non-public APIs over WebSocket if set to true.
+	WSAllowInsecureUnlock bool `toml:",omitempty"`
 
 	// WSExposeAll exposes all API modules via the WebSocket RPC interface rather
 	// than just the public ones.

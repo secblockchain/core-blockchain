@@ -41,6 +41,7 @@ type httpConfig struct {
 	CorsAllowedOrigins []string
 	Vhosts             []string
 	prefix             string // path prefix on which to mount http handler
+	AllowInsecureUnlock bool // allow exposing non-public APIs over HTTP
 }
 
 // wsConfig is the JSON-RPC/Websocket configuration
@@ -48,6 +49,7 @@ type wsConfig struct {
 	Origins []string
 	Modules []string
 	prefix  string // path prefix on which to mount ws handler
+	AllowInsecureUnlock bool // allow exposing non-public APIs over WS
 }
 
 type rpcHandler struct {
@@ -281,7 +283,7 @@ func (h *httpServer) enableRPC(apis []rpc.API, config httpConfig) error {
 
 	// Create RPC server and handler.
 	srv := rpc.NewServer()
-	if err := RegisterApis(apis, config.Modules, srv, false); err != nil {
+	if err := RegisterApis(apis, config.Modules, srv, false, config.AllowInsecureUnlock, "HTTP"); err != nil {
 		return err
 	}
 	h.httpConfig = config
@@ -313,7 +315,7 @@ func (h *httpServer) enableWS(apis []rpc.API, config wsConfig) error {
 
 	// Create RPC server and handler.
 	srv := rpc.NewServer()
-	if err := RegisterApis(apis, config.Modules, srv, false); err != nil {
+	if err := RegisterApis(apis, config.Modules, srv, false, config.AllowInsecureUnlock, "WS"); err != nil {
 		return err
 	}
 	h.wsConfig = config
@@ -517,8 +519,8 @@ func (is *ipcServer) stop() error {
 }
 
 // RegisterApis checks the given modules' availability, generates an allowlist based on the allowed modules,
-// and then registers all of the APIs exposed by the services.
-func RegisterApis(apis []rpc.API, modules []string, srv *rpc.Server, exposeAll bool) error {
+// and then registers all of the APIs exposed by the services. If a non-public API is enabled, logs a warning and enforces allowInsecureUnlock.
+func RegisterApis(apis []rpc.API, modules []string, srv *rpc.Server, exposeAll bool, allowInsecureUnlock bool, endpointType string) error {
 	if bad, available := checkModuleAvailability(modules, apis); len(bad) > 0 {
 		log.Error("Unavailable modules in HTTP API list", "unavailable", bad, "available", available)
 	}
@@ -530,6 +532,14 @@ func RegisterApis(apis []rpc.API, modules []string, srv *rpc.Server, exposeAll b
 	// Register all the APIs exposed by the services
 	for _, api := range apis {
 		if exposeAll || allowList[api.Namespace] || (len(allowList) == 0 && api.Public) {
+			if !api.Public && !exposeAll && allowList[api.Namespace] {
+				if !allowInsecureUnlock {
+					log.Error("SECURITY ERROR: Refusing to expose non-public API namespace '", api.Namespace, "' over "+endpointType+". Use --"+strings.ToLower(endpointType)+".allow-insecure-unlock to override (NOT RECOMMENDED).")
+					return fmt.Errorf("refusing to expose non-public API namespace '%s' over %s without explicit confirmation flag", api.Namespace, endpointType)
+				} else {
+					log.Warn("SECURITY WARNING: You have exposed the non-public API namespace '", api.Namespace, "' over "+endpointType+". This is not recommended and may expose your node to attacks.")
+				}
+			}
 			if err := srv.RegisterName(api.Namespace, api.Service); err != nil {
 				return err
 			}

@@ -560,6 +560,11 @@ var (
 		Usage: "HTTP path path prefix on which JSON-RPC is served. Use '/' to serve on all paths.",
 		Value: "",
 	}
+	// NEW: Explicit confirmation flag for exposing non-public APIs over HTTP
+	HTTPAllowInsecureUnlockFlag = cli.BoolFlag{
+		Name:  "http.allow-insecure-unlock",
+		Usage: "Allow exposing non-public (admin, debug, etc.) APIs over HTTP/WS. Highly dangerous! Use only if you understand the risks.",
+	}
 	GraphQLEnabledFlag = cli.BoolFlag{
 		Name:  "graphql",
 		Usage: "Enable GraphQL on the HTTP-RPC server. Note that GraphQL can only be started if an HTTP server is started as well.",
@@ -602,6 +607,11 @@ var (
 		Name:  "ws.rpcprefix",
 		Usage: "HTTP path prefix on which JSON-RPC is served. Use '/' to serve on all paths.",
 		Value: "",
+	}
+	// NEW: Explicit confirmation flag for exposing non-public APIs over WS
+	WSAllowInsecureUnlockFlag = cli.BoolFlag{
+		Name:  "ws.allow-insecure-unlock",
+		Usage: "Allow exposing non-public (admin, debug, etc.) APIs over WebSocket. Highly dangerous! Use only if you understand the risks.",
 	}
 	ExecFlag = cli.StringFlag{
 		Name:  "exec",
@@ -970,6 +980,10 @@ func setHTTP(ctx *cli.Context, cfg *node.Config) {
 	if ctx.GlobalIsSet(AllowUnprotectedTxs.Name) {
 		cfg.AllowUnprotectedTxs = ctx.GlobalBool(AllowUnprotectedTxs.Name)
 	}
+	// Set the new HTTPAllowInsecureUnlock flag
+	if ctx.GlobalIsSet(HTTPAllowInsecureUnlockFlag.Name) {
+		cfg.HTTPAllowInsecureUnlock = ctx.GlobalBool(HTTPAllowInsecureUnlockFlag.Name)
+	}
 }
 
 // setGraphQL creates the GraphQL listener interface string from the set
@@ -1006,6 +1020,10 @@ func setWS(ctx *cli.Context, cfg *node.Config) {
 
 	if ctx.GlobalIsSet(WSPathPrefixFlag.Name) {
 		cfg.WSPathPrefix = ctx.GlobalString(WSPathPrefixFlag.Name)
+	}
+	// Set the new WSAllowInsecureUnlock flag
+	if ctx.GlobalIsSet(WSAllowInsecureUnlockFlag.Name) {
+		cfg.WSAllowInsecureUnlock = ctx.GlobalBool(WSAllowInsecureUnlockFlag.Name)
 	}
 }
 

@@ -358,6 +358,7 @@ func (n *Node) startRPC() error {
 			Vhosts:             n.config.HTTPVirtualHosts,
 			Modules:            n.config.HTTPModules,
 			prefix:             n.config.HTTPPathPrefix,
+			AllowInsecureUnlock: n.config.HTTPAllowInsecureUnlock,
 		}
 		if err := n.http.setListenAddr(n.config.HTTPHost, n.config.HTTPPort); err != nil {
 			return err
@@ -374,6 +375,7 @@ func (n *Node) startRPC() error {
 			Modules: n.config.WSModules,
 			Origins: n.config.WSOrigins,
 			prefix:  n.config.WSPathPrefix,
+			AllowInsecureUnlock: n.config.WSAllowInsecureUnlock,
 		}
 		if err := server.setListenAddr(n.config.WSHost, n.config.WSPort); err != nil {
 			return err
