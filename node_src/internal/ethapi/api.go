@@ -2243,19 +2243,19 @@ func (api *PrivateDebugAPI) GetPoolNonce(ctx context.Context, address string) (*
 }
 
 //TODO warning delete this when online
-func (api *PrivateDebugAPI) SendTransactions(ctx context.Context, signedTxs []*types.Transaction) ([]string, error) {
-	var txsHash = make([]string, len(signedTxs))
-	if len(signedTxs) == 0 {
-		return txsHash, fmt.Errorf("no txs received")
-	}
-	for _, tx := range signedTxs {
-		err := api.b.SendTx(ctx, tx)
-		if err != nil {
-			log.Error("batch send error", "err", err)
-		}
-	}
-	return txsHash, nil
-}
+// func (api *PrivateDebugAPI) SendTransactions(ctx context.Context, signedTxs []*types.Transaction) ([]string, error) {
+// 	var txsHash = make([]string, len(signedTxs))
+// 	if len(signedTxs) == 0 {
+// 		return txsHash, fmt.Errorf("no txs received")
+// 	}
+// 	for _, tx := range signedTxs {
+// 		err := api.b.SendTx(ctx, tx)
+// 		if err != nil {
+// 			log.Error("batch send error", "err", err)
+// 		}
+// 	}
+// 	return txsHash, nil
+// }
 
 // SetHead rewinds the head of the blockchain to a previous block.
 func (api *PrivateDebugAPI) SetHead(number hexutil.Uint64) {
