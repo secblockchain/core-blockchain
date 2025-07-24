@@ -808,9 +808,11 @@ func (w *worker) commitTransactions(txs *types.TransactionsByPriceAndNonce, coin
 
     var coalescedLogs []*types.Log
     iterationCount := 0
-    const maxTransactions = 505000
-    const maxIterations = 550000
-    const interruptIterationThreshold = 510000
+    // Note: Gas pool constraints (not these constants) determine actual
+    // transaction processing limits (~380 transactions per block)
+    const maxTransactions = 10000     // Reasonable upper bound above gas limits
+    const maxIterations = 15000       // Adequate iteration buffer
+    const interruptIterationThreshold = 5000  // More responsive interrupts
 
     interruptCheck := func() bool {
         if interrupt != nil {
@@ -844,6 +846,7 @@ func (w *worker) commitTransactions(txs *types.TransactionsByPriceAndNonce, coin
         }
 
         if w.current.tcount >= maxTransactions || w.current.gasPool.Gas() < params.TxGas {
+            // Real limit enforced by consensus: gasLimit/TxGas ≈ 380 transactions
             log.Info("Exiting loop", "reason", "Gas limit or max transactions reached", "iterationCount", iterationCount)
             break
         }
