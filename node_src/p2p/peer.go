@@ -292,6 +292,8 @@ func (p *Peer) pingLoop() {
 	defer p.wg.Done()
 	
 	ping := time.NewTimer(pingInterval)
+	
+	defer ping.Stop() // prevents memory leak
 
 	for {
 		select {
