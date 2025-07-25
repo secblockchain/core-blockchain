@@ -175,9 +175,10 @@ func makeFullNode(ctx *cli.Context) (*node.Node, ethapi.Backend) {
 	}
 
 	// Configure GraphQL if requested
-	if ctx.GlobalIsSet(utils.GraphQLEnabledFlag.Name) {
-		utils.RegisterGraphQLService(stack, backend, cfg.Node)
-	}
+	// GraphQL endpoint is disabled due to F-2025-10947 (finding by hacken)
+	// if ctx.GlobalIsSet(utils.GraphQLEnabledFlag.Name) {
+	// 	utils.RegisterGraphQLService(stack, backend, cfg.Node)
+	// }
 	// Add the Ethereum Stats daemon if requested.
 	if cfg.Ethstats.URL != "" {
 		utils.RegisterEthStatsService(stack, backend, cfg.Ethstats.URL)

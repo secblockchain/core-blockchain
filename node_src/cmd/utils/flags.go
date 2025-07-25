@@ -560,10 +560,11 @@ var (
 		Usage: "HTTP path path prefix on which JSON-RPC is served. Use '/' to serve on all paths.",
 		Value: "",
 	}
-	GraphQLEnabledFlag = cli.BoolFlag{
-		Name:  "graphql",
-		Usage: "Enable GraphQL on the HTTP-RPC server. Note that GraphQL can only be started if an HTTP server is started as well.",
-	}
+	// GraphQL endpoint is disabled due to F-2025-10947 (finding by hacken)
+	// GraphQLEnabledFlag = cli.BoolFlag{
+	// 	Name:  "graphql",
+	// 	Usage: "Enable GraphQL on the HTTP-RPC server. Note that GraphQL can only be started if an HTTP server is started as well.",
+	// }
 	GraphQLCORSDomainFlag = cli.StringFlag{
 		Name:  "graphql.corsdomain",
 		Usage: "Comma separated list of domains from which to accept cross origin requests (browser enforced)",

@@ -145,7 +145,7 @@ var AppHelpFlagGroups = []flags.FlagGroup{
 			utils.WSApiFlag,
 			utils.WSPathPrefixFlag,
 			utils.WSAllowedOriginsFlag,
-			utils.GraphQLEnabledFlag,
+			// utils.GraphQLEnabledFlag, // GraphQL endpoint is disabled due to F-2025-10947 (finding by hacken)
 			utils.GraphQLCORSDomainFlag,
 			utils.GraphQLVirtualHostsFlag,
 			utils.RPCGlobalGasCapFlag,
