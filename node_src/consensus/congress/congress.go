@@ -1158,14 +1158,8 @@ func (c *Congress) Seal(chain consensus.ChainHeaderReader, block *types.Block, r
   // If we're amongst the recent validators, wait for the next block
   for seen, recent := range snap.Recents {
   	if recent == val {
-  		// Determine the limit based on the number of validators
-  		var limit uint64
-		limit = uint64(len(snap.Validators)/2 + 1)
-  		if len(snap.Validators) > 21 || len(snap.Validators) == 1  {
-  			limit = uint64(len(snap.Validators)/2 + 1)
-  		} else { //if number > 9299500 {
-  			limit = 2
-  		}
+  		// Use the correct N/2+1 limit consistently
+  		limit := uint64(len(snap.Validators)/2 + 1)
   		// Validator is among recents, only wait if the current block doesn't shift it out
   		if number < limit || seen > number-limit {
   			log.Info("Signed recently, must wait for others")

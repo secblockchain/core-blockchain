@@ -133,13 +133,7 @@ func (s *Snapshot) apply(headers []*types.Header, chain consensus.ChainHeaderRea
 		// Remove any votes on checkpoint blocks
 		number := header.Number.Uint64()
 		// Delete the oldest validator from the recent list to allow it signing again
-		var limit uint64
-		if len(snap.Validators) > 21 || len(snap.Validators) == 1 {
-			limit = uint64(len(snap.Validators)/2 + 1)
-		} else { //if number > 9299500 {
-			limit = 2
-		}
-		if number >= limit {
+		if limit := uint64(len(snap.Validators)/2 + 1); number >= limit {
 			for i := uint64(0); i < limit; i++ {
 				delete(snap.Recents, number-limit+i)
 			}
@@ -175,12 +169,7 @@ func (s *Snapshot) apply(headers []*types.Header, chain consensus.ChainHeaderRea
 			}
 
 			// Need to delete recorded recent seen blocks if necessary, it may pause whole chain when validators length decreases.
-			var epochLimit uint64      
-			if len(newValidators) > 21 || len(newValidators) == 1 {
-				epochLimit = uint64(len(newValidators)/2 + 1)
-			} else { //if number > 9299500 {
-				epochLimit = 2
-			} 
+			epochLimit := uint64(len(newValidators)/2 + 1)
 			for i := 0; i < len(snap.Validators)/2-len(newValidators)/2; i++ {
 				delete(snap.Recents, number-epochLimit-uint64(i))
 			}
