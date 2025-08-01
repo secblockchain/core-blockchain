@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
+	"math/big"
+
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -15,8 +18,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/rlp"
-	"math"
-	"math/big"
 )
 
 // Proposal is the system governance proposal info.
@@ -27,6 +28,27 @@ type Proposal struct {
 	To     common.Address
 	Value  *big.Int
 	Data   []byte
+}
+
+// TODO: add whitelist functions and addresses after we update the Quorum thresold, empty for now.
+var GOVERNANCE_WHITELIST = map[common.Address]map[[4]byte]bool{
+	// Example: only allow calling 'updateActiveValidatorSet' on the Validators contract
+	// systemcontract.ValidatorsContractAddr: {
+	//     [4]byte{0x12, 0x34, 0x56, 0x78}: true,
+	// },
+}
+
+func isWhitelisted(target common.Address, data []byte) bool {
+	if len(data) < 4 {
+		return false
+	}
+	var functionSelector [4]byte
+	copy(functionSelector[:], data[:4])
+
+	if allowedFunctions, exists := GOVERNANCE_WHITELIST[target]; exists {
+		return allowedFunctions[functionSelector]
+	}
+	return false
 }
 
 func (c *Congress) getPassedProposalCount(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB) (uint32, error) {
@@ -89,7 +111,7 @@ func (c *Congress) getPassedProposalByIndex(chain consensus.ChainHeaderReader, h
 	return prop, nil
 }
 
-//finishProposalById
+// finishProposalById
 func (c *Congress) finishProposalById(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, id *big.Int) error {
 	method := "finishProposalById"
 	data, err := c.abi[systemcontract.SysGovContractName].Pack(method, id)
@@ -171,12 +193,16 @@ func (c *Congress) executeProposalMsg(chain consensus.ChainHeaderReader, header 
 	switch action {
 	case 0:
 		// evm action.
+		// Enforce whitelist for EVM calls
+		if !isWhitelisted(prop.To, prop.Data) {
+			log.Error("Governance proposal rejected: target or function not whitelisted", "target", prop.To, "data", hexutil.Encode(prop.Data))
+			return types.NewReceipt([]byte{}, true, header.GasUsed)
+		}
 		receipt = c.executeEvmCallProposal(chain, header, state, prop, totalTxIndex, txHash, bHash)
 	case 1:
-		// delete code action
-		ok := state.Erase(prop.To)
-		receipt = types.NewReceipt([]byte{}, ok != true, header.GasUsed)
-		log.Info("executeProposalMsg", "action", "erase", "id", prop.Id.String(), "to", prop.To, "txHash", txHash.String(), "success", ok)
+		// IMMEDIATE FIX: Disable contract destruction entirely
+		log.Error("Contract destruction via governance is disabled for security", "target", prop.To)
+		return types.NewReceipt([]byte{}, true, header.GasUsed)
 	default:
 		receipt = types.NewReceipt([]byte{}, true, header.GasUsed)
 		log.Warn("executeProposalMsg failed, unsupported action", "action", action, "id", prop.Id.String(), "from", prop.From, "to", prop.To, "value", prop.Value.String(), "data", hexutil.Encode(prop.Data), "txHash", txHash.String())
