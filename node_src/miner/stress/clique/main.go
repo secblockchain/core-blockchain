@@ -148,8 +148,8 @@ func main() {
 // makeGenesis creates a custom Clique genesis block based on some pre-defined
 // signer and faucet accounts.
 func makeGenesis(faucets []*ecdsa.PrivateKey, sealers []*ecdsa.PrivateKey) *core.Genesis {
-	// Create a Clique network based off of the Rinkeby config
-	genesis := core.DefaultRinkebyGenesisBlock()
+	// Create a Clique network based off of the Ropsten config
+	genesis := core.DefaultRopstenGenesisBlock()
 	genesis.GasLimit = 25000000
 
 	genesis.Config.ChainID = big.NewInt(18)

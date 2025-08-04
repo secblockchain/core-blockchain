@@ -53,9 +53,27 @@ type Client struct {
 
 // NewClient returns a new simulation API client
 func NewClient(url string) *Client {
+	// Create a custom HTTP client with proper redirect handling
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// Clear sensitive headers on cross-origin redirects
+			if len(via) > 0 {
+				lastReq := via[len(via)-1]
+				if req.URL.Host != lastReq.URL.Host {
+					// Clear sensitive headers for cross-origin redirects
+					req.Header.Del("Authorization")
+					req.Header.Del("Cookie")
+					req.Header.Del("X-CSRF-Token")
+					req.Header.Del("X-Requested-With")
+				}
+			}
+			return nil
+		},
+	}
+
 	return &Client{
 		URL:    url,
-		client: http.DefaultClient,
+		client: client,
 	}
 }
 

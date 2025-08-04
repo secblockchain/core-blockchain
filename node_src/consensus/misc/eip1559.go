@@ -61,8 +61,26 @@ func FetchSEPPrice() (float64, error) {
 	// Define the API URL
 	apiURL := "https://sapi.xt.com/v4/public/ticker/price/"
 
-	// Make an HTTP GET request
-	resp, err := http.Get(apiURL)
+	// Create a custom HTTP client with proper redirect handling
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			// Clear sensitive headers on cross-origin redirects
+			if len(via) > 0 {
+				lastReq := via[len(via)-1]
+				if req.URL.Host != lastReq.URL.Host {
+					// Clear sensitive headers for cross-origin redirects
+					req.Header.Del("Authorization")
+					req.Header.Del("Cookie")
+					req.Header.Del("X-CSRF-Token")
+					req.Header.Del("X-Requested-With")
+				}
+			}
+			return nil
+		},
+	}
+
+	// Make an HTTP GET request using the custom client
+	resp, err := client.Get(apiURL)
 	if err != nil {
 		return 0, fmt.Errorf("failed to fetch data: %w", err)
 	}
