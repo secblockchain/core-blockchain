@@ -25,15 +25,15 @@ require (
 	github.com/golang/protobuf v1.4.3
 	github.com/golang/snappy v0.0.4
 	github.com/google/gofuzz v1.1.1-0.20200604201612-c04b05f3adfa
-	github.com/google/uuid v1.1.5
+	github.com/google/uuid v1.2.0
 	github.com/gorilla/websocket v1.4.2
-	github.com/graph-gophers/graphql-go v0.0.0-20201113091052-beb923fada29
+	github.com/graph-gophers/graphql-go v1.3.0
 	github.com/hashicorp/go-bexpr v0.1.10
 	github.com/hashicorp/golang-lru v0.5.5-0.20210104140557-80c98217689d
 	github.com/holiman/bloomfilter/v2 v2.0.3
 	github.com/holiman/uint256 v1.2.0
 	github.com/huin/goupnp v1.0.2
-	github.com/influxdata/influxdb v1.8.3
+	github.com/influxdata/influxdb v1.8.10
 	github.com/influxdata/influxdb-client-go/v2 v2.4.0
 	github.com/jackpal/go-nat-pmp v1.0.2-0.20160603034137-1fa385a6f458
 	github.com/jedisct1/go-minisign v0.0.0-20190909160543-45766022959e
@@ -54,10 +54,10 @@ require (
 	github.com/stretchr/testify v1.7.0
 	github.com/syndtr/goleveldb v1.0.1-0.20210819022825-2ae1ddf74ef7
 	github.com/tyler-smith/go-bip39 v1.0.1-0.20181017060643-dbb3b84ba2ef
-	golang.org/x/crypto v0.0.0-20210322153248-0c34fe9e7dc2
-	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c
-	golang.org/x/sys v0.12.0
-	golang.org/x/text v0.3.6
+	golang.org/x/crypto v0.35.0
+	golang.org/x/sync v0.11.0
+	golang.org/x/sys v0.30.0
+	golang.org/x/text v0.22.0
 	golang.org/x/time v0.0.0-20210220033141-f8bda1e9f3ba
 	gopkg.in/natefinch/lumberjack.v2 v2.0.0
 	gopkg.in/natefinch/npipe.v2 v2.0.0-20160621034901-c1b8fa8bdcce
@@ -93,8 +93,8 @@ require (
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/tklauser/go-sysconf v0.3.5 // indirect
 	github.com/tklauser/numcpus v0.2.2 // indirect
-	golang.org/x/net v0.0.0-20210805182204-aaa1db679c0d // indirect
-	golang.org/x/term v0.0.0-20201126162022-7de9c90e9dd1 // indirect
+	golang.org/x/net v0.36.0 // indirect
+	golang.org/x/term v0.29.0 // indirect
 	google.golang.org/protobuf v1.23.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.0-20200313102051-9f266ea9e77c // indirect
