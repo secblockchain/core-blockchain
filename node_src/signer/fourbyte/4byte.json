@@ -121655,7 +121655,7 @@
 "d459654a": "techSupport()",
 "d45973f4": "turretElementBySubtypeIndex(uint256)",
 "d4597aa1": "tokenFrozenUntilTime()",
-"d459fc46": "SetCheckpoint(uint256,bytes32,bytes32,uint64,uint8[],bytes32[],bytes32[])",
+"d459fc46": "SetCheckpoint(bytes32,uint64,uint256[],uint8[],bytes32[],bytes32[])",
 "d45a717e": "topGoodsId()",
 "d45b1ae4": "StandardGasPriceLimit(uint256)",
 "d45b5f71": "getIcoStep(uint256)",
