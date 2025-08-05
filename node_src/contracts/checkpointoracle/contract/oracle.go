@@ -103,7 +103,7 @@ type CheckpointOracleTransactorRaw struct {
 	Contract *CheckpointOracleTransactor // Generic write-only contract binding to access the raw methods on
 }
 
-// NewCheckpointOracle creates a new instance of CheckpointOracle, bound to a specific deployed contract.
+// NewCheckpointOracle is an auto generated write-only Go binding around an Ethereum contract.
 func NewCheckpointOracle(address common.Address, backend bind.ContractBackend) (*CheckpointOracle, error) {
 	contract, err := bindCheckpointOracle(address, backend, backend, backend)
 	if err != nil {
@@ -112,7 +112,29 @@ func NewCheckpointOracle(address common.Address, backend bind.ContractBackend) (
 	return &CheckpointOracle{CheckpointOracleCaller: CheckpointOracleCaller{contract: contract}, CheckpointOracleTransactor: CheckpointOracleTransactor{contract: contract}, CheckpointOracleFilterer: CheckpointOracleFilterer{contract: contract}}, nil
 }
 
-// NewCheckpointOracleCaller creates a new read-only instance of CheckpointOracle, bound to a specific deployed contract.
+// DeployCheckpointOracle deploys a new Ethereum contract, binding an instance of CheckpointOracle to it.
+func DeployCheckpointOracle(auth *bind.TransactOpts, backend bind.ContractBackend, _adminlist []common.Address, _sectionSize *big.Int, _processConfirms *big.Int, _threshold *big.Int, _chainId *big.Int) (common.Address, *types.Transaction, *CheckpointOracle, error) {
+	parsed, err := abi.JSON(strings.NewReader(CheckpointOracleABI))
+	if err != nil {
+		return common.Address{}, nil, nil, err
+	}
+	
+	// Deploy the contract using bind.DeployContract
+	address, tx, _, err := bind.DeployContract(auth, parsed, common.FromHex(CheckpointOracleBin), backend, _adminlist, _sectionSize, _processConfirms, _threshold, _chainId)
+	if err != nil {
+		return common.Address{}, nil, nil, err
+	}
+	
+	// Create the CheckpointOracle instance
+	contract, err := NewCheckpointOracle(address, backend)
+	if err != nil {
+		return common.Address{}, nil, nil, err
+	}
+	
+	return address, tx, contract, nil
+}
+
+// NewCheckpointOracleCaller is an auto generated read-only Go binding around an Ethereum contract.
 func NewCheckpointOracleCaller(address common.Address, caller bind.ContractCaller) (*CheckpointOracleCaller, error) {
 	contract, err := bindCheckpointOracle(address, caller, nil, nil)
 	if err != nil {

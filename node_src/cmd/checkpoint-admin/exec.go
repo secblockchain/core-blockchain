@@ -19,7 +19,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/binary"
 	"fmt"
 	"math/big"
 	"strings"
@@ -107,10 +106,16 @@ func deploy(ctx *cli.Context) error {
 	// setup clef signer, create an abigen transactor and an RPC client
 	transactor, client := newClefSigner(ctx), newClient(ctx)
 
-	// Deploy the checkpoint oracle
+	// Get chain ID from client for EIP-712 domain separator
+	chainID, err := client.ChainID(context.Background())
+	if err != nil {
+		utils.Fatalf("Failed to get chain ID: %v", err)
+	}
+
+	// Deploy the checkpoint oracle with chain ID
 	fmt.Println("Sending deploy request to Clef...")
 	oracle, tx, _, err := contract.DeployCheckpointOracle(transactor, client, addrs, big.NewInt(int64(params.CheckpointFrequency)),
-		big.NewInt(int64(params.CheckpointProcessConfirmations)), big.NewInt(int64(needed)))
+		big.NewInt(int64(params.CheckpointProcessConfirmations)), big.NewInt(int64(needed)), chainID)
 	if err != nil {
 		utils.Fatalf("Failed to deploy checkpoint oracle %v", err)
 	}
@@ -131,6 +136,7 @@ func sign(ctx *cli.Context) error {
 
 		node   *rpc.Client
 		oracle *checkpointoracle.CheckpointOracle
+		err    error
 	)
 	if !ctx.GlobalIsSet(nodeURLFlag.Name) {
 		// Offline mode signing
@@ -209,12 +215,42 @@ func sign(ctx *cli.Context) error {
 			return err
 		}
 	}
+
+	// Get nonce for EIP-712 signature
+	var nonce *big.Int
+	if !offline {
+		nonce, err = oracle.GetAdminNonce(nil, common.HexToAddress(signer))
+		if err != nil {
+			utils.Fatalf("Failed to get admin nonce: %v", err)
+		}
+	} else {
+		// For offline mode, we need to get the nonce from the user or use 0
+		// This is a limitation of offline mode - the user should provide the current nonce
+		nonce = big.NewInt(0)
+		fmt.Println("Warning: Using nonce 0 for offline mode. Ensure this is the correct nonce.")
+	}
+
+	// Get chain ID for EIP-712 domain separator
+	var chainID *big.Int
+	if !offline {
+		chainID, err = oracle.GetChainId(nil)
+		if err != nil {
+			utils.Fatalf("Failed to get chain ID: %v", err)
+		}
+	} else {
+		// For offline mode, we need to get the chain ID from the user
+		// This is a limitation of offline mode
+		chainID = big.NewInt(1) // Default to mainnet
+		fmt.Println("Warning: Using chain ID 1 for offline mode. Ensure this is correct.")
+	}
+
+	// Create EIP-712 hash
+	signedHash := createEIP712Hash(cindex, address, chash, nonce, chainID)
+
 	clef := newRPCClient(ctx.String(clefURLFlag.Name))
 	p := make(map[string]string)
-	buf := make([]byte, 8)
-	binary.BigEndian.PutUint64(buf, cindex)
 	p["address"] = address.Hex()
-	p["message"] = hexutil.Encode(append(buf, chash.Bytes()...))
+	p["message"] = hexutil.Encode(signedHash)
 
 	fmt.Println("Sending signing request to Clef...")
 	if err := clef.Call(&signature, "account_signData", accounts.MimetypeDataWithValidator, signer, p); err != nil {
@@ -222,16 +258,66 @@ func sign(ctx *cli.Context) error {
 	}
 	fmt.Printf("Signer     => %s\n", signer)
 	fmt.Printf("Signature  => %s\n", signature)
+	fmt.Printf("Nonce      => %s\n", nonce.String())
 	return nil
 }
 
-// sighash calculates the hash of the data to sign for the checkpoint oracle.
-func sighash(index uint64, oracle common.Address, hash common.Hash) []byte {
-	buf := make([]byte, 8)
-	binary.BigEndian.PutUint64(buf, index)
+// createEIP712Hash creates the EIP-712 hash for the checkpoint oracle.
+func createEIP712Hash(index uint64, oracle common.Address, hash common.Hash, nonce *big.Int, chainID *big.Int) []byte {
+	// EIP-712 domain separator type hash
+	domainSeparatorTypeHash := crypto.Keccak256([]byte("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"))
 
-	data := append([]byte{0x19, 0x00}, append(oracle[:], append(buf, hash[:]...)...)...)
-	return crypto.Keccak256(data)
+	// Checkpoint type hash
+	checkpointTypeHash := crypto.Keccak256([]byte("Checkpoint(uint64 sectionIndex,bytes32 hash,uint256 nonce)"))
+
+	// Domain name and version
+	domainName := crypto.Keccak256([]byte("CheckpointOracle"))
+	domainVersion := crypto.Keccak256([]byte("1"))
+
+	// Create domain separator
+	domainSeparator := crypto.Keccak256(abiEncode(
+		domainSeparatorTypeHash,
+		domainName,
+		domainVersion,
+		chainID,
+		oracle,
+	))
+
+	// Create checkpoint struct hash
+	checkpointHash := crypto.Keccak256(abiEncode(
+		checkpointTypeHash,
+		big.NewInt(int64(index)),
+		hash,
+		nonce,
+	))
+
+	// Create final signed hash (EIP-712 format)
+	signedHash := crypto.Keccak256(append(
+		[]byte{0x19, 0x01},
+		append(domainSeparator, checkpointHash...)...,
+	))
+
+	return signedHash
+}
+
+// abiEncode is a simplified ABI encoder for our specific use case
+func abiEncode(types ...interface{}) []byte {
+	var result []byte
+	for _, t := range types {
+		switch v := t.(type) {
+		case []byte:
+			result = append(result, v...)
+		case common.Address:
+			result = append(result, v.Bytes()...)
+		case common.Hash:
+			result = append(result, v.Bytes()...)
+		case *big.Int:
+			result = append(result, v.Bytes()...)
+		default:
+			panic(fmt.Sprintf("unsupported type: %T", t))
+		}
+	}
+	return result
 }
 
 // ecrecover calculates the sender address from a sighash and signature combo.
@@ -268,41 +354,65 @@ func publish(ctx *cli.Context) error {
 		client       = newRPCClient(ctx.GlobalString(nodeURLFlag.Name))
 		addr, oracle = newContract(client)
 		checkpoint   = getCheckpoint(ctx, client)
-		sighash      = sighash(checkpoint.SectionIndex, addr, checkpoint.Hash())
 	)
+
+	// Get chain ID for EIP-712 hash creation
+	chainID, err := oracle.GetChainId(nil)
+	if err != nil {
+		utils.Fatalf("Failed to get chain ID: %v", err)
+	}
+
+	// Fetch nonces for each signer
+	var nonces []*big.Int
+	for _, sig := range sigs {
+		// Create a temporary hash for signature recovery (using nonce 0 as placeholder)
+		tempHash := createEIP712Hash(checkpoint.SectionIndex, addr, checkpoint.Hash(), big.NewInt(0), chainID)
+		signer := ecrecover(tempHash, sig)
+		nonce, err := oracle.GetAdminNonce(nil, signer)
+		if err != nil {
+			utils.Fatalf("Failed to get nonce for signer %s: %v", signer.Hex(), err)
+		}
+		nonces = append(nonces, nonce)
+	}
+
+	// Sort signatures and nonces by signer address
 	for i := 0; i < len(sigs); i++ {
 		for j := i + 1; j < len(sigs); j++ {
-			signerA := ecrecover(sighash, sigs[i])
-			signerB := ecrecover(sighash, sigs[j])
+			// Create temporary hashes for comparison (using nonce 0 as placeholder)
+			tempHash := createEIP712Hash(checkpoint.SectionIndex, addr, checkpoint.Hash(), big.NewInt(0), chainID)
+			signerA := ecrecover(tempHash, sigs[i])
+			signerB := ecrecover(tempHash, sigs[j])
 			if bytes.Compare(signerA.Bytes(), signerB.Bytes()) > 0 {
 				sigs[i], sigs[j] = sigs[j], sigs[i]
+				nonces[i], nonces[j] = nonces[j], nonces[i]
 			}
 		}
 	}
-	// Retrieve recent header info to protect replay attack
-	reqCtx, cancelFn := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancelFn()
 
-	head, err := ethclient.NewClient(client).HeaderByNumber(reqCtx, nil)
-	if err != nil {
-		return err
+	// Convert signatures to v, r, s arrays
+	var v []uint8
+	var r [][32]byte
+	var s [][32]byte
+	for _, sig := range sigs {
+		if len(sig) != 65 {
+			utils.Fatalf("Invalid signature length")
+		}
+		v = append(v, sig[64])
+		r = append(r, common.BytesToHash(sig[:32]))
+		s = append(s, common.BytesToHash(sig[32:64]))
 	}
-	num := head.Number.Uint64()
-	recent, err := ethclient.NewClient(client).HeaderByNumber(reqCtx, big.NewInt(int64(num-128)))
-	if err != nil {
-		return err
-	}
+
 	// Print a summary of the operation that's going to be performed
 	fmt.Printf("Publishing %d => %s:\n\n", checkpoint.SectionIndex, checkpoint.Hash().Hex())
-	for i, sig := range sigs {
-		fmt.Printf("Signer %d => %s\n", i+1, ecrecover(sighash, sig).Hex())
+	for _, sig := range sigs {
+		tempHash := createEIP712Hash(checkpoint.SectionIndex, addr, checkpoint.Hash(), big.NewInt(0), chainID)
+		fmt.Printf("Signer => %s\n", ecrecover(tempHash, sig).Hex())
 	}
 	fmt.Println()
-	fmt.Printf("Sentry number => %d\nSentry hash   => %s\n", recent.Number, recent.Hash().Hex())
 
-	// Publish the checkpoint into the oracle
+	// Publish the checkpoint into the oracle using EIP-712 with nonces
 	fmt.Println("Sending publish request to Clef...")
-	tx, err := oracle.RegisterCheckpoint(newClefSigner(ctx), checkpoint.SectionIndex, checkpoint.Hash().Bytes(), recent.Number, recent.Hash(), sigs)
+	tx, err := oracle.Contract().SetCheckpoint(newClefSigner(ctx), checkpoint.Hash(), checkpoint.SectionIndex, nonces, v, r, s)
 	if err != nil {
 		utils.Fatalf("Register contract failed %v", err)
 	}
