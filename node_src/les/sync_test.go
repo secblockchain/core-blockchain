@@ -18,12 +18,14 @@
 package les
 
 import (
+	"encoding/binary"
 	"fmt"
 	"math/big"
 	"testing"
 	"time"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -83,13 +85,38 @@ func testCheckpointSyncing(t *testing.T, protocol int, syncMode int) {
 			client.handler.backend.blockchain.AddTrustedCheckpoint(cp)
 		} else {
 			// Register the assembled checkpoint into oracle.
-			header := server.backend.Blockchain().CurrentHeader()
 
-			data := append([]byte{0x19, 0x00}, append(oracleAddr.Bytes(), append([]byte{0, 0, 0, 0, 0, 0, 0, 0}, cp.Hash().Bytes()...)...)...)
-			sig, _ := crypto.Sign(crypto.Keccak256(data), signerKey)
+			// Create EIP-712 signature for the checkpoint
+			// Get the current nonce for the signer
+			nonce, err := server.handler.server.oracle.Contract().GetAdminNonce(nil, signerAddr)
+			if err != nil {
+				t.Error("failed to get admin nonce", err)
+				return
+			}
+			
+			// Create EIP-712 signature data
+			domainSeparatorTypeHash := crypto.Keccak256([]byte("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"))
+			checkpointTypeHash := crypto.Keccak256([]byte("Checkpoint(uint64 sectionIndex,bytes32 hash,uint256 nonce)"))
+			domainName := crypto.Keccak256([]byte("CheckpointOracle"))
+			domainVersion := crypto.Keccak256([]byte("1.0"))
+			chainId := big.NewInt(1337)
+			
+			// Create domain separator
+			domainSeparator := crypto.Keccak256(append(append(append(append(domainSeparatorTypeHash, domainName...), domainVersion...), common.LeftPadBytes(chainId.Bytes(), 32)...), oracleAddr.Bytes()...))
+			
+			// Create checkpoint struct hash
+			indexBytes := make([]byte, 8)
+			binary.BigEndian.PutUint64(indexBytes, cp.SectionIndex)
+			nonceBytes := common.LeftPadBytes(nonce.Bytes(), 32)
+			checkpointHash := crypto.Keccak256(append(append(checkpointTypeHash, indexBytes...), append(cp.Hash().Bytes(), nonceBytes...)...))
+			
+			// Create final hash to sign
+			finalHash := crypto.Keccak256(append(append([]byte{0x19, 0x01}, domainSeparator...), checkpointHash...))
+			
+			sig, _ := crypto.Sign(finalHash, signerKey)
 			sig[64] += 27 // Transform V from 0/1 to 27/28 according to the yellow paper
 			auth, _ := bind.NewKeyedTransactorWithChainID(signerKey, big.NewInt(1337))
-			if _, err := server.handler.server.oracle.Contract().RegisterCheckpoint(auth, cp.SectionIndex, cp.Hash().Bytes(), new(big.Int).Sub(header.Number, big.NewInt(1)), header.ParentHash, [][]byte{sig}); err != nil {
+			if _, err := server.handler.server.oracle.Contract().Contract().SetCheckpoint(auth, cp.Hash(), cp.SectionIndex, []*big.Int{nonce}, []uint8{sig[64]}, [][32]byte{common.BytesToHash(sig[:32])}, [][32]byte{common.BytesToHash(sig[32:64])}); err != nil {
 				t.Error("register checkpoint failed", err)
 			}
 			server.backend.Commit()
@@ -171,13 +198,38 @@ func testMissOracleBackend(t *testing.T, hasCheckpoint bool, protocol int) {
 		BloomRoot:    light.GetBloomTrieRoot(server.db, s-1, head),
 	}
 	// Register the assembled checkpoint into oracle.
-	header := server.backend.Blockchain().CurrentHeader()
 
-	data := append([]byte{0x19, 0x00}, append(oracleAddr.Bytes(), append([]byte{0, 0, 0, 0, 0, 0, 0, 0}, cp.Hash().Bytes()...)...)...)
-	sig, _ := crypto.Sign(crypto.Keccak256(data), signerKey)
+	// Create EIP-712 signature for the checkpoint
+	// Get the current nonce for the signer
+	nonce, err := server.handler.server.oracle.Contract().GetAdminNonce(nil, signerAddr)
+	if err != nil {
+		t.Error("failed to get admin nonce", err)
+		return
+	}
+	
+	// Create EIP-712 signature data
+	domainSeparatorTypeHash := crypto.Keccak256([]byte("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"))
+	checkpointTypeHash := crypto.Keccak256([]byte("Checkpoint(uint64 sectionIndex,bytes32 hash,uint256 nonce)"))
+	domainName := crypto.Keccak256([]byte("CheckpointOracle"))
+	domainVersion := crypto.Keccak256([]byte("1.0"))
+	chainId := big.NewInt(1337)
+	
+	// Create domain separator
+	domainSeparator := crypto.Keccak256(append(append(append(append(domainSeparatorTypeHash, domainName...), domainVersion...), common.LeftPadBytes(chainId.Bytes(), 32)...), oracleAddr.Bytes()...))
+	
+	// Create checkpoint struct hash
+	indexBytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(indexBytes, cp.SectionIndex)
+	nonceBytes := common.LeftPadBytes(nonce.Bytes(), 32)
+	checkpointHash := crypto.Keccak256(append(append(checkpointTypeHash, indexBytes...), append(cp.Hash().Bytes(), nonceBytes...)...))
+	
+	// Create final hash to sign
+	finalHash := crypto.Keccak256(append(append([]byte{0x19, 0x01}, domainSeparator...), checkpointHash...))
+	
+	sig, _ := crypto.Sign(finalHash, signerKey)
 	sig[64] += 27 // Transform V from 0/1 to 27/28 according to the yellow paper
 	auth, _ := bind.NewKeyedTransactorWithChainID(signerKey, big.NewInt(1337))
-	if _, err := server.handler.server.oracle.Contract().RegisterCheckpoint(auth, cp.SectionIndex, cp.Hash().Bytes(), new(big.Int).Sub(header.Number, big.NewInt(1)), header.ParentHash, [][]byte{sig}); err != nil {
+	if _, err := server.handler.server.oracle.Contract().Contract().SetCheckpoint(auth, cp.Hash(), cp.SectionIndex, []*big.Int{nonce}, []uint8{sig[64]}, [][32]byte{common.BytesToHash(sig[:32])}, [][32]byte{common.BytesToHash(sig[32:64])}); err != nil {
 		t.Error("register checkpoint failed", err)
 	}
 	server.backend.Commit()

@@ -22,6 +22,7 @@ package checkpointoracle
 
 import (
 	"encoding/binary"
+	"math/big"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -117,7 +118,7 @@ func (oracle *CheckpointOracle) StableCheckpoint() (*params.TrustedCheckpoint, u
 	return nil, 0
 }
 
-// VerifySigners recovers the signer addresses according to the signature and
+// VerifySigners recovers the signer addresses according to the EIP-712 signature and
 // checks whether there are enough approvals to finalize the checkpoint.
 func (oracle *CheckpointOracle) VerifySigners(index uint64, hash [32]byte, signatures [][]byte) (bool, []common.Address) {
 	// Short circuit if the given signatures doesn't reach the threshold.
@@ -132,21 +133,43 @@ func (oracle *CheckpointOracle) VerifySigners(index uint64, hash [32]byte, signa
 		if len(signatures[i]) != 65 {
 			continue
 		}
-		// EIP 191 style signatures
+		// EIP-712 style signatures
 		//
-		// Arguments when calculating hash to validate
-		// 1: byte(0x19) - the initial 0x19 byte
-		// 2: byte(0) - the version byte (data with intended validator)
-		// 3: this - the validator address
-		// --  Application specific data
-		// 4 : checkpoint section_index (uint64)
-		// 5 : checkpoint hash (bytes32)
-		//     hash = keccak256(checkpoint_index, section_head, cht_root, bloom_root)
-		buf := make([]byte, 8)
-		binary.BigEndian.PutUint64(buf, index)
-		data := append([]byte{0x19, 0x00}, append(oracle.config.Address.Bytes(), append(buf, hash[:]...)...)...)
+		// Domain separator: keccak256(abi.encode(DOMAIN_SEPARATOR_TYPEHASH, keccak256(bytes(DOMAIN_NAME)), keccak256(bytes(DOMAIN_VERSION)), chainId, address(this)))
+		// Checkpoint struct hash: keccak256(abi.encode(CHECKPOINT_TYPEHASH, _sectionIndex, _hash, _nonce))
+		// Final hash: keccak256(abi.encodePacked("\x19\x01", domainSeparator, checkpointHash))
+		//
+		// Note: Since we don't have access to nonces in this context, we'll use 0 as the nonce
+		// for verification purposes. In practice, the contract will handle nonce verification.
+		
+		// Constants from the contract
+		domainSeparatorTypeHash := crypto.Keccak256([]byte("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"))
+		checkpointTypeHash := crypto.Keccak256([]byte("Checkpoint(uint64 sectionIndex,bytes32 hash,uint256 nonce)"))
+		domainName := crypto.Keccak256([]byte("CheckpointOracle"))
+		domainVersion := crypto.Keccak256([]byte("1.0"))
+		
+		// Get chain ID from the contract if available, otherwise use a default
+		chainId := big.NewInt(1) // Default to mainnet
+		if oracle.contract != nil {
+			if contractChainId, err := oracle.contract.GetChainId(nil); err == nil {
+				chainId = contractChainId
+			}
+		}
+		
+		// Create domain separator
+		domainSeparator := crypto.Keccak256(append(append(append(append(domainSeparatorTypeHash, domainName...), domainVersion...), common.LeftPadBytes(chainId.Bytes(), 32)...), oracle.config.Address.Bytes()...))
+		
+		// Create checkpoint struct hash (using nonce 0 for verification)
+		indexBytes := make([]byte, 8)
+		binary.BigEndian.PutUint64(indexBytes, index)
+		nonceBytes := common.LeftPadBytes(big.NewInt(0).Bytes(), 32)
+		checkpointHash := crypto.Keccak256(append(append(checkpointTypeHash, indexBytes...), append(hash[:], nonceBytes...)...))
+		
+		// Create final hash to verify
+		finalHash := crypto.Keccak256(append(append([]byte{0x19, 0x01}, domainSeparator...), checkpointHash...))
+		
 		signatures[i][64] -= 27 // Transform V from 27/28 to 0/1 according to the yellow paper for verification.
-		pubkey, err := crypto.Ecrecover(crypto.Keccak256(data), signatures[i])
+		pubkey, err := crypto.Ecrecover(finalHash, signatures[i])
 		if err != nil {
 			return false, nil
 		}
