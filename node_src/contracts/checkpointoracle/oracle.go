@@ -79,12 +79,21 @@ func (oracle *CheckpointOracle) LookupCheckpointEvents(blockLogs [][]*types.Log,
 //
 // Notably all signatures given should be transformed to "ethereum style" which transforms
 // v from 0/1 to 27/28 according to the yellow paper.
-func (oracle *CheckpointOracle) RegisterCheckpoint(opts *bind.TransactOpts, index uint64, hash []byte, rnum *big.Int, rhash [32]byte, sigs [][]byte) (*types.Transaction, error) {
+//
+// The function now uses EIP-712 signature validation with nonce-based replay protection.
+// Each signer must provide their current nonce, which will be verified and incremented.
+func (oracle *CheckpointOracle) RegisterCheckpoint(opts *bind.TransactOpts, index uint64, hash []byte, nonces []*big.Int, sigs [][]byte) (*types.Transaction, error) {
 	var (
 		r [][32]byte
 		s [][32]byte
 		v []uint8
 	)
+	
+	// Validate that we have the same number of nonces as signatures
+	if len(nonces) != len(sigs) {
+		return nil, errors.New("number of nonces must match number of signatures")
+	}
+	
 	for i := 0; i < len(sigs); i++ {
 		if len(sigs[i]) != 65 {
 			return nil, errors.New("invalid signature")
@@ -93,5 +102,27 @@ func (oracle *CheckpointOracle) RegisterCheckpoint(opts *bind.TransactOpts, inde
 		s = append(s, common.BytesToHash(sigs[i][32:64]))
 		v = append(v, sigs[i][64])
 	}
-	return oracle.contract.SetCheckpoint(opts, rnum, rhash, common.BytesToHash(hash), index, v, r, s)
+	return oracle.contract.SetCheckpoint(opts, common.BytesToHash(hash), index, nonces, v, r, s)
+}
+
+// GetAdminNonce retrieves the current nonce for a specific admin address.
+// This is used for EIP-712 signature creation and replay protection.
+func (oracle *CheckpointOracle) GetAdminNonce(opts *bind.CallOpts, admin common.Address) (*big.Int, error) {
+	return oracle.contract.GetAdminNonce(opts, admin)
+}
+
+// GetChainId retrieves the chain ID used in the EIP-712 domain separator.
+// This is important for cross-chain replay protection.
+func (oracle *CheckpointOracle) GetChainId(opts *bind.CallOpts) (*big.Int, error) {
+	return oracle.contract.ChainId(opts)
+}
+
+// GetLatestCheckpoint retrieves the latest checkpoint information.
+func (oracle *CheckpointOracle) GetLatestCheckpoint(opts *bind.CallOpts) (uint64, common.Hash, *big.Int, error) {
+	return oracle.contract.GetLatestCheckpoint(opts)
+}
+
+// GetAllAdmin retrieves all admin addresses registered with the oracle.
+func (oracle *CheckpointOracle) GetAllAdmin(opts *bind.CallOpts) ([]common.Address, error) {
+	return oracle.contract.GetAllAdmin(opts)
 }
