@@ -28,13 +28,13 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/metrics/exp"
-	"github.com/fjl/memsize/memsizeui"
+	// "github.com/fjl/memsize/memsizeui" // Disabled due to Go 1.24+ compatibility issues
 	"github.com/mattn/go-colorable"
 	"github.com/mattn/go-isatty"
 	"gopkg.in/urfave/cli.v1"
 )
 
-var Memsize memsizeui.Handler
+// var Memsize memsizeui.Handler // Disabled due to Go 1.24+ compatibility issues
 var ID string
 
 var (
@@ -256,7 +256,7 @@ func StartPProf(address string, withMetrics bool) {
 	if withMetrics {
 		exp.Exp(metrics.DefaultRegistry)
 	}
-	http.Handle("/memsize/", http.StripPrefix("/memsize", &Memsize))
+	// http.Handle("/memsize/", http.StripPrefix("/memsize", &Memsize)) // Disabled due to Go 1.24+ compatibility issues
 	log.Info("Starting pprof server", "addr", fmt.Sprintf("http://%s/debug/pprof", address))
 	go func() {
 		if err := http.ListenAndServe(address, nil); err != nil {
