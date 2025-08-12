@@ -1,8 +1,9 @@
 package congress
 
 import (
-	"github.com/ethereum/go-ethereum/common"
 	"testing"
+
+	"github.com/ethereum/go-ethereum/common"
 )
 
 func TestCalcSlotOfDevMappingKey(t *testing.T) {

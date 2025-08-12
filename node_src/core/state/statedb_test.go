@@ -584,7 +584,8 @@ func TestCopyCopyCommitCopy(t *testing.T) {
 	state, _ := New(common.Hash{}, NewDatabase(rawdb.NewMemoryDatabase()), nil)
 
 	// Get the coinbase address and its balance
-	coinbaseAddr := state.GetBalance(common.Address{})
+	coinbaseAddr := common.Address{1}
+	state.SetBalance(coinbaseAddr, big.NewInt(1000000))
 	coinbaseBalance := state.GetBalance(coinbaseAddr)
 
 	// Define the test address and storage key-value pairs

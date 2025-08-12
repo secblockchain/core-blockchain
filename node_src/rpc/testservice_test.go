@@ -73,7 +73,7 @@ func (testError) ErrorData() interface{} { return "testError data" }
 
 func (s *testService) NoArgsRets() {}
 
-func (s *testService) Null() any {
+func (s *testService) Null() interface{} {
 	return nil
 }
 

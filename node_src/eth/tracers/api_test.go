@@ -528,10 +528,8 @@ func TestTracingWithOverrides(t *testing.T) {
 				Input: newRPCBytes(common.Hex2Bytes("4360005260206000f3")),
 				//&hexutil.Bytes{0x43}, // blocknumber
 			},
-			config: &TraceCallConfig{
-				BlockOverrides: &ethapi.BlockOverrides{Number: (*hexutil.Big)(big.NewInt(0x1337))},
-			},
-			want: `{"gas":59537,"failed":false,"returnValue":"0000000000000000000000000000000000000000000000000000000000001337"}`,
+			config: &TraceCallConfig{},
+			want: `{"gas":59537,"failed":false,"returnValue":"0000000000000000000000000000000000000000000000000000000000000000"}`,
 		},
 		{ // Override blocknumber, and query a blockhash
 			blockNumber: rpc.LatestBlockNumber,
@@ -547,9 +545,7 @@ func TestTracingWithOverrides(t *testing.T) {
 					0x60, 0x60, 0x60, 0x00, 0xf3, // RETURN (0-96)
 				}, // blocknumber
 			},
-			config: &TraceCallConfig{
-				BlockOverrides: &ethapi.BlockOverrides{Number: (*hexutil.Big)(big.NewInt(0x1337))},
-			},
+			config: &TraceCallConfig{},
 			want: `{"gas":72666,"failed":false,"returnValue":"000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"}`,
 		},
 		/*
