@@ -20,13 +20,15 @@ package congress
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"sort"
-  "errors"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethdb"
+	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 	lru "github.com/hashicorp/golang-lru"
 )
@@ -53,6 +55,12 @@ func (s validatorsAscending) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 // method does not initialize the set of recent validators, so only ever use if for
 // the genesis block.
 func newSnapshot(config *params.CongressConfig, sigcache *lru.ARCCache, number uint64, hash common.Hash, validators []common.Address) *Snapshot {
+	// Validate that the validator set meets security requirements
+	if len(validators) < minValidators {
+		// Log error but don't panic - this is called during genesis
+		log.Error("Creating snapshot with insufficient validators", "validators_count", len(validators), "min_required", minValidators)
+	}
+
 	snap := &Snapshot{
 		config:     config,
 		sigcache:   sigcache,
@@ -133,12 +141,14 @@ func (s *Snapshot) apply(headers []*types.Header, chain consensus.ChainHeaderRea
 		// Remove any votes on checkpoint blocks
 		number := header.Number.Uint64()
 		// Delete the oldest validator from the recent list to allow it signing again
-		var limit uint64
-		if len(snap.Validators) > 21 || len(snap.Validators) == 1 {
-			limit = uint64(len(snap.Validators)/2 + 1)
-		} else { //if number > 9299500 {
-			limit = 2
+		// Enforce minimum validator threshold - prevent single validator control
+		if len(snap.Validators) < minValidators {
+			return nil, fmt.Errorf("insufficient validators: validator set size %d below minimum threshold %d", len(snap.Validators), minValidators)
 		}
+
+		// Calculate limit based on validator count, ensuring fault tolerance
+		limit := uint64(len(snap.Validators)/2 + 1)
+
 		if number >= limit {
 			for i := uint64(0); i < limit; i++ {
 				delete(snap.Recents, number-limit+i)
@@ -174,13 +184,20 @@ func (s *Snapshot) apply(headers []*types.Header, chain consensus.ChainHeaderRea
 				newValidators[validator] = struct{}{}
 			}
 
+			// Validate that the new validator set meets security requirements
+			if len(newValidators) < minValidators {
+				return nil, fmt.Errorf("insufficient validators: new validator set size %d below minimum threshold %d", len(newValidators), minValidators)
+			}
+
 			// Need to delete recorded recent seen blocks if necessary, it may pause whole chain when validators length decreases.
-			var epochLimit uint64      
-			if len(newValidators) > 21 || len(newValidators) == 1 {
-				epochLimit = uint64(len(newValidators)/2 + 1)
-			} else { //if number > 9299500 {
-				epochLimit = 2
-			} 
+			// Enforce minimum validator threshold - prevent single validator control
+			if len(newValidators) < minValidators {
+				return nil, fmt.Errorf("insufficient validators: new validator set size %d below minimum threshold %d", len(newValidators), minValidators)
+			}
+
+			// Calculate epoch limit based on validator count, ensuring fault tolerance
+			epochLimit := uint64(len(newValidators)/2 + 1)
+
 			for i := 0; i < len(snap.Validators)/2-len(newValidators)/2; i++ {
 				delete(snap.Recents, number-epochLimit-uint64(i))
 			}
@@ -194,7 +211,6 @@ func (s *Snapshot) apply(headers []*types.Header, chain consensus.ChainHeaderRea
 
 	return snap, nil
 }
-
 
 // validators retrieves the list of authorized validators in ascending order.
 func (s *Snapshot) validators() []common.Address {

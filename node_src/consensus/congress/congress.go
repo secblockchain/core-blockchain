@@ -31,8 +31,6 @@ import (
 	"sync"
 	"time"
 
-
-
 	"github.com/ethereum/go-ethereum/metrics"
 
 	"github.com/ethereum/go-ethereum/accounts"
@@ -53,7 +51,6 @@ import (
 	"github.com/ethereum/go-ethereum/trie"
 	lru "github.com/hashicorp/golang-lru"
 	"golang.org/x/crypto/sha3"
-
 )
 
 const (
@@ -63,6 +60,7 @@ const (
 
 	wiggleTime    = 500 * time.Millisecond // Random delay (per validator) to allow concurrent validators
 	maxValidators = 21                     // Max validators allowed to seal.
+	minValidators = 4                      // Min validators required for network operation
 
 	inmemoryBlacklist = 21 // Number of recent blacklist snapshots to keep in memory
 )
@@ -143,6 +141,9 @@ var (
 	// errInvalidValidatorLen is returned if validators length is zero or bigger than maxValidators.
 	errInvalidValidatorsLength = errors.New("Invalid validators length")
 
+	// errInsufficientValidators is returned if the validator set is below the minimum required threshold.
+	errInsufficientValidators = errors.New("insufficient validators: minimum threshold not met")
+
 	// errInvalidCoinbase is returned if the coinbase isn't the validator of the block.
 	errInvalidCoinbase = errors.New("Invalid coin base")
 
@@ -184,6 +185,17 @@ func ecrecover(header *types.Header, sigcache *lru.ARCCache) (common.Address, er
 
 	sigcache.Add(hash, validator)
 	return validator, nil
+}
+
+// validateValidatorSet ensures the validator set meets security requirements
+func (c *Congress) validateValidatorSet(validators []common.Address) error {
+	if len(validators) < minValidators {
+		return fmt.Errorf("%w: got %d, need at least %d", errInsufficientValidators, len(validators), minValidators)
+	}
+	if len(validators) > maxValidators {
+		return fmt.Errorf("%w: got %d, max allowed %d", errInvalidValidatorsLength, len(validators), maxValidators)
+	}
+	return nil
 }
 
 // Congress is the proof-of-stake-authority consensus engine proposed to support the
@@ -494,60 +506,66 @@ func (c *Congress) VerifySeal(chain consensus.ChainHeaderReader, header *types.H
 }
 
 func (c *Congress) verifySeal(chain consensus.ChainHeaderReader, header *types.Header, parents []*types.Header) error {
-    // Verifying the genesis block is not supported
-    number := header.Number.Uint64()
-    if number == 0 {
-        return errUnknownBlock
-    }
-    // Retrieve the snapshot needed to verify this header and cache it
-    snap, err := c.snapshot(chain, number-1, header.ParentHash, parents)
-    if err != nil {
-        return err
-    }
+	// Verifying the genesis block is not supported
+	number := header.Number.Uint64()
+	if number == 0 {
+		return errUnknownBlock
+	}
+	// Retrieve the snapshot needed to verify this header and cache it
+	snap, err := c.snapshot(chain, number-1, header.ParentHash, parents)
+	if err != nil {
+		return err
+	}
 
-    // Resolve the authorization key and check against validators
-    signer, err := ecrecover(header, c.signatures)
-    if err != nil {
-        return err
-    }
-    if signer != header.Coinbase {
-        return errInvalidCoinbase
-    }
+	// Resolve the authorization key and check against validators
+	signer, err := ecrecover(header, c.signatures)
+	if err != nil {
+		return err
+	}
+	if signer != header.Coinbase {
+		return errInvalidCoinbase
+	}
 
-    if _, ok := snap.Validators[signer]; !ok {
-        return errUnauthorizedValidator
-    }
+	if _, ok := snap.Validators[signer]; !ok {
+		return errUnauthorizedValidator
+	}
 
-    for seen, recent := range snap.Recents {
-        if recent == signer {
-            var limit uint64
-			limit = uint64(len(snap.Validators)/2 + 1)
-            if len(snap.Validators) > 21 || len(snap.Validators) == 1  {
-                limit = uint64(len(snap.Validators)/2 + 1)
-            } else {  //if number > 9299500 {  // Replace 'someGivenNumber' with the actual variable or value you want to compare against
-                limit = 2
-            }
-            // Validator is among recents, only fail if the current block doesn't shift it out
-            if seen > number-limit {
-                return errors.New("signed recently location-1")
-            }
-        }
-    }
+	// Validate that the current validator set meets security requirements
+	if err := c.validateValidatorSet(snap.validators()); err != nil {
+		log.Error("Cannot verify seal: validator set validation failed", "error", err, "validators_count", len(snap.Validators))
+		return err
+	}
 
-    // Ensure that the difficulty corresponds to the turn-ness of the signer
-    if !c.fakeDiff {
-        inturn := snap.inturn(header.Number.Uint64(), signer)
-        if inturn && header.Difficulty.Cmp(diffInTurn) != 0 {
-            return errWrongDifficulty
-        }
-        if !inturn && header.Difficulty.Cmp(diffNoTurn) != 0 {
-            return errWrongDifficulty
-        }
-    }
+	for seen, recent := range snap.Recents {
+		if recent == signer {
+			// Enforce minimum validator threshold - prevent single validator control
+			if len(snap.Validators) < minValidators {
+				return fmt.Errorf("%w: validator set size %d below minimum threshold %d", errInsufficientValidators, len(snap.Validators), minValidators)
+			}
 
-    return nil
+			// Calculate limit based on validator count, ensuring fault tolerance
+			limit := uint64(len(snap.Validators)/2 + 1)
+
+			// Validator is among recents, only fail if the current block doesn't shift it out
+			if seen > number-limit {
+				return errors.New("signed recently location-1")
+			}
+		}
+	}
+
+	// Ensure that the difficulty corresponds to the turn-ness of the signer
+	if !c.fakeDiff {
+		inturn := snap.inturn(header.Number.Uint64(), signer)
+		if inturn && header.Difficulty.Cmp(diffInTurn) != 0 {
+			return errWrongDifficulty
+		}
+		if !inturn && header.Difficulty.Cmp(diffNoTurn) != 0 {
+			return errWrongDifficulty
+		}
+	}
+
+	return nil
 }
-
 
 // Prepare implements consensus.Engine, preparing all the consensus fields of the
 // header for running the transactions on top.
@@ -564,6 +582,12 @@ func (c *Congress) Prepare(chain consensus.ChainHeaderReader, header *types.Head
 
 	// Set the correct difficulty
 	header.Difficulty = calcDifficulty(snap, c.validator)
+
+	// Validate that the current validator set meets security requirements
+	if err := c.validateValidatorSet(snap.validators()); err != nil {
+		log.Error("Cannot prepare block: validator set validation failed", "error", err, "validators_count", len(snap.Validators))
+		return err
+	}
 
 	// Ensure the extra data has all its components
 	if len(header.Extra) < extraVanity {
@@ -610,9 +634,9 @@ func (c *Congress) Finalize(chain consensus.ChainHeaderReader, header *types.Hea
 	}
 
 	// Set the base fee manually for EIP-1559 blocks
-    // Static base fee = 476,190 gwei
+	// Static base fee = 476,190 gwei
 	parent := chain.GetHeader(header.ParentHash, header.Number.Uint64()-1)
-    if chain.Config().IsLondon(header.Number) { // EIP-1559 is active
+	if chain.Config().IsLondon(header.Number) { // EIP-1559 is active
 		// header.BaseFee = big.NewInt(476190000000000) // 476,190 gwei
 		header.BaseFee = misc.CalcBaseFee(chain.Config(), parent)
 	}
@@ -634,12 +658,11 @@ func (c *Congress) Finalize(chain consensus.ChainHeaderReader, header *types.Hea
 	}
 
 	// deposit block reward if any tx exists.
-	var addr [] common.Address
-	var gass [] uint64
-
+	var addr []common.Address
+	var gass []uint64
 
 	if len(*txs) > 0 {
-				
+
 		var totalGasSum uint64
 
 		for i := 0; i < len(*txs); i++ {
@@ -657,13 +680,13 @@ func (c *Congress) Finalize(chain consensus.ChainHeaderReader, header *types.Hea
 			// Accumulate gasFee to totalGasSum
 			totalGasSum += gasFee
 		}
-		
-	    fee := state.GetBalance(consensus.FeeRecoder)
+
+		fee := state.GetBalance(consensus.FeeRecoder)
 
 		feeUint64 := fee.Uint64()
 
 		if totalGasSum > feeUint64 {
-		
+
 			percentDifference := float64(totalGasSum-feeUint64) / float64(totalGasSum) * 100
 
 			for i := 0; i < len(gass); i++ {
@@ -671,8 +694,8 @@ func (c *Congress) Finalize(chain consensus.ChainHeaderReader, header *types.Hea
 				gass[i] -= decreaseAmount
 			}
 		}
-	    	
-		if err := c.trySendBlockReward(chain, header, state,addr,gass); err != nil {
+
+		if err := c.trySendBlockReward(chain, header, state, addr, gass); err != nil {
 			//panic(err)
 			log.Info(err.Error())
 		}
@@ -757,9 +780,9 @@ func (c *Congress) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header
 	}
 
 	// Set the base fee manually for EIP-1559 blocks
-    // Static base fee = 476,190 gwei
+	// Static base fee = 476,190 gwei
 	parent := chain.GetHeader(header.ParentHash, header.Number.Uint64()-1)
-    if chain.Config().IsLondon(header.Number) { // EIP-1559 is active
+	if chain.Config().IsLondon(header.Number) { // EIP-1559 is active
 		// header.BaseFee = big.NewInt(476190000000000) // 476,190 gwei
 		header.BaseFee = misc.CalcBaseFee(chain.Config(), parent)
 	}
@@ -772,13 +795,12 @@ func (c *Congress) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header
 	}
 
 	// deposit block reward if any tx exists.
-	var addr [] common.Address
-	var gass [] uint64
+	var addr []common.Address
+	var gass []uint64
 	//addr = new[len(txs)]
-	
-	
+
 	if len(txs) > 0 {
-				
+
 		var totalGasSum uint64
 
 		for i := 0; i < len(txs); i++ {
@@ -796,13 +818,13 @@ func (c *Congress) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header
 			// Accumulate gasFee to totalGasSum
 			totalGasSum += gasFee
 		}
-		
-	    fee := state.GetBalance(consensus.FeeRecoder)
+
+		fee := state.GetBalance(consensus.FeeRecoder)
 
 		feeUint64 := fee.Uint64()
 
 		if totalGasSum > feeUint64 {
-		
+
 			percentDifference := float64(totalGasSum-feeUint64) / float64(totalGasSum) * 100
 
 			for i := 0; i < len(gass); i++ {
@@ -810,8 +832,8 @@ func (c *Congress) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header
 				gass[i] -= decreaseAmount
 			}
 		}
-	
-		if err := c.trySendBlockReward(chain, header, state,addr,gass); err != nil {
+
+		if err := c.trySendBlockReward(chain, header, state, addr, gass); err != nil {
 			//panic(err)
 			log.Info(err.Error())
 
@@ -874,7 +896,7 @@ func (c *Congress) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header
 	return types.NewBlock(header, txs, nil, receipts, new(trie.Trie)), receipts, nil
 }
 
-func (c *Congress) trySendBlockReward(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, addr [] common.Address,gass [] uint64) error {
+func (c *Congress) trySendBlockReward(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, addr []common.Address, gass []uint64) error {
 	fee := state.GetBalance(consensus.FeeRecoder)
 	if fee.Cmp(common.Big0) <= 0 {
 		return nil
@@ -885,24 +907,22 @@ func (c *Congress) trySendBlockReward(chain consensus.ChainHeaderReader, header 
 	if len(addr) == 0 || len(gass) == 0 {
 		log.Warn("Attempted to distribute block rewards for empty block - potential attack blocked",
 			"block", header.Number, "coinbase", header.Coinbase, "accumulated_fees", fee)
-		return nil  // EXIT EARLY - NO FEE DISTRIBUTION
+		return nil // EXIT EARLY - NO FEE DISTRIBUTION
 	}
 
 	// Miner will send tx to deposit block fees to contract, add to his balance first.
 	state.AddBalance(header.Coinbase, fee)
 	// reset fee
 	state.SetBalance(consensus.FeeRecoder, common.Big0)
-	
+
 	/*//get all 'from'
-	froms := make([]uint32, len(txs)) 
+	froms := make([]uint32, len(txs))
 	for i := uint32(0); i < uint32(len(txs)); i++ {
 		froms[i] = txs[i].from
-	}*/	
-	
-	
-	
+	}*/
+
 	method := "distributeBlockReward"
-	data, err := c.abi[systemcontract.ValidatorsContractName].Pack(method,addr,gass)
+	data, err := c.abi[systemcontract.ValidatorsContractName].Pack(method, addr, gass)
 	if err != nil {
 		log.Error("Can't pack data for distributeBlockReward", "err", err)
 		return err
@@ -971,6 +991,12 @@ func (c *Congress) initializeSystemContracts(chain consensus.ChainHeaderReader, 
 	genesisValidators := snap.validators()
 	if len(genesisValidators) == 0 || len(genesisValidators) > maxValidators {
 		return errInvalidValidatorsLength
+	}
+
+	// Validate that the genesis validator set meets security requirements
+	if err := c.validateValidatorSet(genesisValidators); err != nil {
+		log.Error("Genesis validator set validation failed", "error", err, "validators_count", len(genesisValidators))
+		return err
 	}
 
 	method := "initialize"
@@ -1042,11 +1068,24 @@ func (c *Congress) getTopValidators(chain consensus.ChainHeaderReader, header *t
 	if !ok {
 		return []common.Address{}, errors.New("Invalid validators format")
 	}
+
+	// Validate that the validator set meets security requirements
+	if err := c.validateValidatorSet(validators); err != nil {
+		log.Error("Validator set validation failed", "error", err, "validators_count", len(validators))
+		return []common.Address{}, err
+	}
+
 	sort.Sort(validatorsAscending(validators))
 	return validators, err
 }
 
 func (c *Congress) updateValidators(vals []common.Address, chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB) error {
+	// Validate that the validator set meets security requirements before updating
+	if err := c.validateValidatorSet(vals); err != nil {
+		log.Error("Cannot update validators: validation failed", "error", err, "validators_count", len(vals))
+		return err
+	}
+
 	// method
 	method := "updateActiveValidatorSet"
 	data, err := c.abi[systemcontract.ValidatorsContractName].Pack(method, vals, new(big.Int).SetUint64(c.config.Epoch))
@@ -1145,25 +1184,31 @@ func (c *Congress) Seal(chain consensus.ChainHeaderReader, block *types.Block, r
 	if _, authorized := snap.Validators[val]; !authorized {
 		return errUnauthorizedValidator
 	}
- 
-  // If we're amongst the recent validators, wait for the next block
-  for seen, recent := range snap.Recents {
-  	if recent == val {
-  		// Determine the limit based on the number of validators
-  		var limit uint64
-		limit = uint64(len(snap.Validators)/2 + 1)
-  		if len(snap.Validators) > 21 || len(snap.Validators) == 1  {
-  			limit = uint64(len(snap.Validators)/2 + 1)
-  		} else { //if number > 9299500 {
-  			limit = 2
-  		}
-  		// Validator is among recents, only wait if the current block doesn't shift it out
-  		if number < limit || seen > number-limit {
-  			log.Info("Signed recently, must wait for others")
-  			return nil
-  		}
-  	}
-  }
+
+	// Validate that the current validator set meets security requirements
+	if err := c.validateValidatorSet(snap.validators()); err != nil {
+		log.Error("Cannot seal block: validator set validation failed", "error", err, "validators_count", len(snap.Validators))
+		return err
+	}
+
+	// If we're amongst the recent validators, wait for the next block
+	for seen, recent := range snap.Recents {
+		if recent == val {
+			// Enforce minimum validator threshold - prevent single validator control
+			if len(snap.Validators) < minValidators {
+				return fmt.Errorf("%w: validator set size %d below minimum threshold %d", errInsufficientValidators, len(snap.Validators), minValidators)
+			}
+
+			// Calculate limit based on validator count, ensuring fault tolerance
+			limit := uint64(len(snap.Validators)/2 + 1)
+
+			// Validator is among recents, only wait if the current block doesn't shift it out
+			if number < limit || seen > number-limit {
+				log.Info("Signed recently, must wait for others")
+				return nil
+			}
+		}
+	}
 
 	// Sweet, the protocol permits us to sign the block, wait for our time
 	delay := time.Unix(int64(header.Time), 0).Sub(time.Now()) // nolint: gosimple
@@ -1554,11 +1599,12 @@ func (c *Congress) commonCallContract(header *types.Header, statedb *state.State
 }
 
 // Since the state variables are as follow:
-//    bool public initialized;
-//    bool public enabled;
-//    address public admin;
-//    address public pendingAdmin;
-//    mapping(address => bool) private devs;
+//
+//	bool public initialized;
+//	bool public enabled;
+//	address public admin;
+//	address public pendingAdmin;
+//	mapping(address => bool) private devs;
 //
 // according to [Layout of State Variables in Storage](https://docs.soliditylang.org/en/v0.8.4/internals/layout_in_storage.html),
 // and after optimizer enabled, the `initialized`, `enabled` and `admin` will be packed, and stores at slot 0,
