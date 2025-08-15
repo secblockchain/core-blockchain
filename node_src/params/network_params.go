@@ -58,11 +58,13 @@ const (
 	// considered immutable (i.e. soft finality). It is used by the downloader as a
 	// hard limit against deep ancestors, by the blockchain against deep reorgs, by
 	// the freezer as the cutoff threshold and by clique as the snapshot trust limit.
-	FullImmutabilityThreshold = 90000
+	// With 3-second block times, this gives a finality window of ~51.2 minutes instead of ~75 hours
+	FullImmutabilityThreshold = 1024
 
 	// LightImmutabilityThreshold is the number of blocks after which a header chain
 	// segment is considered immutable for light client(i.e. soft finality). It is used by
 	// the downloader as a hard limit against deep ancestors, by the blockchain against deep
 	// reorgs, by the light pruner as the pruning validity guarantee.
-	LightImmutabilityThreshold = 30000
+	// With 3-second block times, this gives a finality window of ~25.6 minutes instead of ~25 hours
+	LightImmutabilityThreshold = 512
 )
