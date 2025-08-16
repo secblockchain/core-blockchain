@@ -54,7 +54,6 @@ import (
 	"github.com/ethereum/go-ethereum/graphql"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
 	"github.com/ethereum/go-ethereum/internal/flags"
-	"github.com/ethereum/go-ethereum/les"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/metrics/exp"
@@ -206,7 +205,7 @@ var (
 	defaultSyncMode = ethconfig.Defaults.SyncMode
 	SyncModeFlag    = TextMarshalerFlag{
 		Name:  "syncmode",
-		Usage: `Blockchain sync mode ("fast", "full", "snap" or "light")`,
+		Usage: `Blockchain sync mode ("fast", "full", or "snap") - Light sync is disabled for security reasons due to Congress consensus vulnerabilities`,
 		Value: &defaultSyncMode,
 	}
 	GCModeFlag = cli.StringFlag{
@@ -241,47 +240,57 @@ var (
 		Usage: "Manually specify Arrow Glacier fork-block, overriding the bundled setting",
 	}
 	// Light server and client settings
+	// SECURITY FIX: Light client functionality is disabled due to Congress consensus vulnerabilities
 	LightServeFlag = cli.IntFlag{
-		Name:  "light.serve",
-		Usage: "Maximum percentage of time allowed for serving LES requests (multi-threaded processing allows values over 100)",
-		Value: ethconfig.Defaults.LightServ,
+		Name:   "light.serve",
+		Usage:  "DISABLED: Light client serving is disabled for security reasons due to Congress consensus vulnerabilities",
+		Value:  0,    // Force to 0 to disable
+		Hidden: true, // Hide from help to prevent confusion
 	}
 	LightIngressFlag = cli.IntFlag{
-		Name:  "light.ingress",
-		Usage: "Incoming bandwidth limit for serving light clients (kilobytes/sec, 0 = unlimited)",
-		Value: ethconfig.Defaults.LightIngress,
+		Name:   "light.ingress",
+		Usage:  "DISABLED: Light client ingress is disabled for security reasons due to Congress consensus vulnerabilities",
+		Value:  0,    // Force to 0 to disable
+		Hidden: true, // Hide from help to prevent confusion
 	}
 	LightEgressFlag = cli.IntFlag{
-		Name:  "light.egress",
-		Usage: "Outgoing bandwidth limit for serving light clients (kilobytes/sec, 0 = unlimited)",
-		Value: ethconfig.Defaults.LightEgress,
+		Name:   "light.egress",
+		Usage:  "DISABLED: Light client egress is disabled for security reasons due to Congress consensus vulnerabilities",
+		Value:  0,    // Force to 0 to disable
+		Hidden: true, // Hide from help to prevent confusion
 	}
 	LightMaxPeersFlag = cli.IntFlag{
-		Name:  "light.maxpeers",
-		Usage: "Maximum number of light clients to serve, or light servers to attach to",
-		Value: ethconfig.Defaults.LightPeers,
+		Name:   "light.maxpeers",
+		Usage:  "DISABLED: Light client max peers is disabled for security reasons due to Congress consensus vulnerabilities",
+		Value:  0,    // Force to 0 to disable
+		Hidden: true, // Hide from help to prevent confusion
 	}
 	UltraLightServersFlag = cli.StringFlag{
-		Name:  "ulc.servers",
-		Usage: "List of trusted ultra-light servers",
-		Value: strings.Join(ethconfig.Defaults.UltraLightServers, ","),
+		Name:   "ulc.servers",
+		Usage:  "DISABLED: Ultra light servers are disabled for security reasons due to Congress consensus vulnerabilities",
+		Value:  "",   // Force to empty to disable
+		Hidden: true, // Hide from help to prevent confusion
 	}
 	UltraLightFractionFlag = cli.IntFlag{
-		Name:  "ulc.fraction",
-		Usage: "Minimum % of trusted ultra-light servers required to announce a new head",
-		Value: ethconfig.Defaults.UltraLightFraction,
+		Name:   "ulc.fraction",
+		Usage:  "DISABLED: Ultra light fraction is disabled for security reasons due to Congress consensus vulnerabilities",
+		Value:  0,    // Force to 0 to disable
+		Hidden: true, // Hide from help to prevent confusion
 	}
 	UltraLightOnlyAnnounceFlag = cli.BoolFlag{
-		Name:  "ulc.onlyannounce",
-		Usage: "Ultra light server sends announcements only",
+		Name:   "ulc.onlyannounce",
+		Usage:  "DISABLED: Ultra light only announce is disabled for security reasons due to Congress consensus vulnerabilities",
+		Hidden: true, // Hide from help to prevent confusion
 	}
 	LightNoPruneFlag = cli.BoolFlag{
-		Name:  "light.nopruning",
-		Usage: "Disable ancient light chain data pruning",
+		Name:   "light.nopruning",
+		Usage:  "DISABLED: Light client pruning is disabled for security reasons due to Congress consensus vulnerabilities",
+		Hidden: true, // Hide from help to prevent confusion
 	}
 	LightNoSyncServeFlag = cli.BoolFlag{
-		Name:  "light.nosyncserve",
-		Usage: "Enables serving light clients before syncing",
+		Name:   "light.nosyncserve",
+		Usage:  "DISABLED: Light client no sync serve is disabled for security reasons due to Congress consensus vulnerabilities",
+		Hidden: true, // Hide from help to prevent confusion
 	}
 	// Ethash settings
 	EthashCacheDirFlag = DirectoryFlag{
@@ -848,27 +857,27 @@ func setBootstrapNodes(ctx *cli.Context, cfg *p2p.Config) {
 	if ctx.GlobalIsSet(BootnodesFlag.Name) {
 		urls = SplitAndTrim(ctx.GlobalString(BootnodesFlag.Name))
 
-	// case ctx.GlobalBool(TestnetFlag.Name):
-	// 	urls = params.TestnetBootnodes
-	// case cfg.BootstrapNodes != nil:
-	// 	return // already set, don't apply defaults.
-	}else{
+		// case ctx.GlobalBool(TestnetFlag.Name):
+		// 	urls = params.TestnetBootnodes
+		// case cfg.BootstrapNodes != nil:
+		// 	return // already set, don't apply defaults.
+	} else {
 		if cfg.BootstrapNodes != nil {
 			return // Already set by config file, don't apply defaults.
 		}
-		switch{
-			case ctx.GlobalBool(TestnetFlag.Name):
-				urls = params.TestnetBootnodes
+		switch {
+		case ctx.GlobalBool(TestnetFlag.Name):
+			urls = params.TestnetBootnodes
 		}
-		
+
 	}
 	cfg.BootstrapNodes = mustParseBootnodes(urls)
 }
 
-	// cfg.BootstrapNodes = make([]*enode.Node, 0, len(urls))
+// cfg.BootstrapNodes = make([]*enode.Node, 0, len(urls))
 func mustParseBootnodes(urls []string) []*enode.Node {
 	nodes := make([]*enode.Node, 0, len(urls))
-	
+
 	for _, url := range urls {
 		if url != "" {
 			node, err := enode.Parse(enode.ValidSchemes, url)
@@ -1499,7 +1508,12 @@ func SetEthConfig(ctx *cli.Context, stack *node.Node, cfg *ethconfig.Config) {
 	godebug.SetGCPercent(int(gogc))
 
 	if ctx.GlobalIsSet(SyncModeFlag.Name) {
-		cfg.SyncMode = *GlobalTextMarshaler(ctx, SyncModeFlag.Name).(*downloader.SyncMode)
+		syncMode := *GlobalTextMarshaler(ctx, SyncModeFlag.Name).(*downloader.SyncMode)
+		// SECURITY FIX: Prevent light sync mode due to Congress consensus vulnerabilities
+		if syncMode == downloader.LightSync {
+			Fatalf("Light sync mode is disabled for security reasons. Congress consensus engine has known vulnerabilities that make light clients unsafe. Please use 'fast', 'full', or 'snap' sync modes instead.")
+		}
+		cfg.SyncMode = syncMode
 	}
 	if ctx.GlobalIsSet(NetworkIdFlag.Name) {
 		cfg.NetworkId = ctx.GlobalUint64(NetworkIdFlag.Name)
@@ -1674,22 +1688,29 @@ func SetDNSDiscoveryDefaults(cfg *ethconfig.Config, genesis common.Hash) {
 // node is running as a light client.
 func RegisterEthService(stack *node.Node, cfg *ethconfig.Config) (ethapi.Backend, *eth.Ethereum) {
 	if cfg.SyncMode == downloader.LightSync {
-		backend, err := les.New(stack, cfg)
-		if err != nil {
-			Fatalf("Failed to register the Ethereum service: %v", err)
-		}
-		stack.RegisterAPIs(tracers.APIs(backend.ApiBackend))
-		return backend.ApiBackend, nil
+		// SECURITY FIX: Light clients are disabled due to Congress consensus vulnerabilities
+		// as identified in the security audit. Light clients using Congress consensus are
+		// susceptible to consensus manipulation attacks including:
+		// - Flawed signature recency validation
+		// - Single validator signature authority issues
+		// - Long-range/reorg attacks
+		// - Validator set manipulation
+		//
+		// Recommendation: Use full node synchronization until Congress consensus
+		// reaches sufficient security maturity.
+		Fatalf("Light client mode is disabled for security reasons. Congress consensus engine has known vulnerabilities that make light clients unsafe. Please use full node synchronization instead.")
 	}
 	backend, err := eth.New(stack, cfg)
 	if err != nil {
 		Fatalf("Failed to register the Ethereum service: %v", err)
 	}
 	if cfg.LightServ > 0 {
-		_, err := les.NewLesServer(stack, backend, cfg)
-		if err != nil {
-			Fatalf("Failed to create the LES server: %v", err)
-		}
+		// SECURITY FIX: Light client serving is also disabled for the same security reasons
+		log.Warn("Light client serving is disabled for security reasons. Congress consensus vulnerabilities make light client serving unsafe.")
+		// _, err := les.NewLesServer(stack, backend, cfg)
+		// if err != nil {
+		// 	Fatalf("Failed to create the LES server: %v", err)
+		// }
 	}
 	stack.RegisterAPIs(tracers.APIs(backend.APIBackend))
 	return backend.APIBackend, backend
