@@ -22,6 +22,7 @@ package light
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math/big"
 	"sync"
 	"sync/atomic"
@@ -79,44 +80,47 @@ type LightChain struct {
 // available in the database. It initialises the default Ethereum header
 // validator.
 func NewLightChain(odr OdrBackend, config *params.ChainConfig, engine consensus.Engine, checkpoint *params.TrustedCheckpoint) (*LightChain, error) {
-	bodyCache, _ := lru.New(bodyCacheLimit)
-	bodyRLPCache, _ := lru.New(bodyCacheLimit)
-	blockCache, _ := lru.New(blockCacheLimit)
 
-	bc := &LightChain{
-		chainDb:       odr.Database(),
-		indexerConfig: odr.IndexerConfig(),
-		odr:           odr,
-		quit:          make(chan struct{}),
-		bodyCache:     bodyCache,
-		bodyRLPCache:  bodyRLPCache,
-		blockCache:    blockCache,
-		engine:        engine,
-	}
-	var err error
-	bc.hc, err = core.NewHeaderChain(odr.Database(), config, bc.engine, bc.getProcInterrupt)
-	if err != nil {
-		return nil, err
-	}
-	bc.genesisBlock, _ = bc.GetBlockByNumber(NoOdr, 0)
-	if bc.genesisBlock == nil {
-		return nil, core.ErrNoGenesis
-	}
-	if checkpoint != nil {
-		bc.AddTrustedCheckpoint(checkpoint)
-	}
-	if err := bc.loadLastState(); err != nil {
-		return nil, err
-	}
-	// Check the current state of the block hashes and make sure that we do not have any of the bad blocks in our chain
-	for hash := range core.BadHashes {
-		if header := bc.GetHeaderByHash(hash); header != nil {
-			log.Error("Found bad hash, rewinding chain", "number", header.Number, "hash", header.ParentHash)
-			bc.SetHead(header.Number.Uint64() - 1)
-			log.Info("Chain rewind was successful, resuming normal operation")
-		}
-	}
-	return bc, nil
+	// bodyCache, _ := lru.New(bodyCacheLimit)
+	// bodyRLPCache, _ := lru.New(bodyCacheLimit)
+	// blockCache, _ := lru.New(blockCacheLimit)
+
+	// bc := &LightChain{
+	// 	chainDb:       odr.Database(),
+	// 	indexerConfig: odr.IndexerConfig(),
+	// 	odr:           odr,
+	// 	quit:          make(chan struct{}),
+	// 	bodyCache:     bodyCache,
+	// 	bodyRLPCache:  bodyRLPCache,
+	// 	blockCache:    blockCache,
+	// 	engine:        engine,
+	// }
+	// var err error
+	// bc.hc, err = core.NewHeaderChain(odr.Database(), config, bc.engine, bc.getProcInterrupt)
+	// if err != nil {
+	// 	return nil, err
+	// }
+	// bc.genesisBlock, _ = bc.GetBlockByNumber(NoOdr, 0)
+	// if bc.genesisBlock == nil {
+	// 	return nil, core.ErrNoGenesis
+	// }
+	// if checkpoint != nil {
+	// 	bc.AddTrustedCheckpoint(checkpoint)
+	// }
+	// if err := bc.loadLastState(); err != nil {
+	// 	return nil, err
+	// }
+	// // Check the current state of the block hashes and make sure that we do not have any of the bad blocks in our chain
+	// for hash := range core.BadHashes {
+	// 	if header := bc.GetHeaderByHash(hash); header != nil {
+	// 		log.Error("Found bad hash, rewinding chain", "number", header.Number, "hash", header.ParentHash)
+	// 		bc.SetHead(header.Number.Uint64() - 1)
+	// 		log.Info("Chain rewind was successful, resuming normal operation")
+	// 	}
+	// }
+	// return bc, nil
+
+	return nil, fmt.Errorf("light chain not supported, please use full node instead")
 }
 
 // AddTrustedCheckpoint adds a trusted checkpoint to the blockchain
