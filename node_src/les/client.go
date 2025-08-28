@@ -25,7 +25,6 @@ import (
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/common/mclock"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/bloombits"
@@ -33,7 +32,6 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/eth/ethconfig"
 	"github.com/ethereum/go-ethereum/eth/filters"
-	"github.com/ethereum/go-ethereum/eth/gasprice"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/internal/ethapi"
 	"github.com/ethereum/go-ethereum/les/downloader"
@@ -81,122 +79,123 @@ type LightEthereum struct {
 
 // New creates an instance of the light client.
 func New(stack *node.Node, config *ethconfig.Config) (*LightEthereum, error) {
-	chainDb, err := stack.OpenDatabase("lightchaindata", config.DatabaseCache, config.DatabaseHandles, "eth/db/chaindata/", false)
-	if err != nil {
-		return nil, err
-	}
-	lesDb, err := stack.OpenDatabase("les.client", 0, 0, "eth/db/lesclient/", false)
-	if err != nil {
-		return nil, err
-	}
-	chainConfig, genesisHash, genesisErr := core.SetupGenesisBlockWithOverride(chainDb, config.Genesis, config.OverrideArrowGlacier)
-	if _, isCompat := genesisErr.(*params.ConfigCompatError); genesisErr != nil && !isCompat {
-		return nil, genesisErr
-	}
-	log.Info("Initialised chain configuration", "config", chainConfig)
+	// chainDb, err := stack.OpenDatabase("lightchaindata", config.DatabaseCache, config.DatabaseHandles, "eth/db/chaindata/", false)
+	// if err != nil {
+	// 	return nil, err
+	// }
+	// lesDb, err := stack.OpenDatabase("les.client", 0, 0, "eth/db/lesclient/", false)
+	// if err != nil {
+	// 	return nil, err
+	// }
+	// chainConfig, genesisHash, genesisErr := core.SetupGenesisBlockWithOverride(chainDb, config.Genesis, config.OverrideArrowGlacier)
+	// if _, isCompat := genesisErr.(*params.ConfigCompatError); genesisErr != nil && !isCompat {
+	// 	return nil, genesisErr
+	// }
+	// log.Info("Initialised chain configuration", "config", chainConfig)
 
-	peers := newServerPeerSet()
-	leth := &LightEthereum{
-		lesCommons: lesCommons{
-			genesis:     genesisHash,
-			config:      config,
-			chainConfig: chainConfig,
-			iConfig:     light.DefaultClientIndexerConfig,
-			chainDb:     chainDb,
-			lesDb:       lesDb,
-			closeCh:     make(chan struct{}),
-		},
-		peers:          peers,
-		eventMux:       stack.EventMux(),
-		reqDist:        newRequestDistributor(peers, &mclock.System{}),
-		accountManager: stack.AccountManager(),
-		engine:         ethconfig.CreateConsensusEngine(stack, chainConfig, &config.Ethash, nil, false, chainDb),
-		bloomRequests:  make(chan chan *bloombits.Retrieval),
-		bloomIndexer:   core.NewBloomIndexer(chainDb, params.BloomBitsBlocksClient, params.HelperTrieConfirmations),
-		p2pServer:      stack.Server(),
-		p2pConfig:      &stack.Config().P2P,
-		udpEnabled:     stack.Config().P2P.DiscoveryV5,
-	}
+	// peers := newServerPeerSet()
+	// leth := &LightEthereum{
+	// 	lesCommons: lesCommons{
+	// 		genesis:     genesisHash,
+	// 		config:      config,
+	// 		chainConfig: chainConfig,
+	// 		iConfig:     light.DefaultClientIndexerConfig,
+	// 		chainDb:     chainDb,
+	// 		lesDb:       lesDb,
+	// 		closeCh:     make(chan struct{}),
+	// 	},
+	// 	peers:          peers,
+	// 	eventMux:       stack.EventMux(),
+	// 	reqDist:        newRequestDistributor(peers, &mclock.System{}),
+	// 	accountManager: stack.AccountManager(),
+	// 	engine:         ethconfig.CreateConsensusEngine(stack, chainConfig, &config.Ethash, nil, false, chainDb),
+	// 	bloomRequests:  make(chan chan *bloombits.Retrieval),
+	// 	bloomIndexer:   core.NewBloomIndexer(chainDb, params.BloomBitsBlocksClient, params.HelperTrieConfirmations),
+	// 	p2pServer:      stack.Server(),
+	// 	p2pConfig:      &stack.Config().P2P,
+	// 	udpEnabled:     stack.Config().P2P.DiscoveryV5,
+	// }
 
-	var prenegQuery vfc.QueryFunc
-	if leth.udpEnabled {
-		prenegQuery = leth.prenegQuery
-	}
-	leth.serverPool, leth.serverPoolIterator = vfc.NewServerPool(lesDb, []byte("serverpool:"), time.Second, prenegQuery, &mclock.System{}, config.UltraLightServers, requestList)
-	leth.serverPool.AddMetrics(suggestedTimeoutGauge, totalValueGauge, serverSelectableGauge, serverConnectedGauge, sessionValueMeter, serverDialedMeter)
+	// var prenegQuery vfc.QueryFunc
+	// if leth.udpEnabled {
+	// 	prenegQuery = leth.prenegQuery
+	// }
+	// leth.serverPool, leth.serverPoolIterator = vfc.NewServerPool(lesDb, []byte("serverpool:"), time.Second, prenegQuery, &mclock.System{}, config.UltraLightServers, requestList)
+	// leth.serverPool.AddMetrics(suggestedTimeoutGauge, totalValueGauge, serverSelectableGauge, serverConnectedGauge, sessionValueMeter, serverDialedMeter)
 
-	leth.retriever = newRetrieveManager(peers, leth.reqDist, leth.serverPool.GetTimeout)
-	leth.relay = newLesTxRelay(peers, leth.retriever)
+	// leth.retriever = newRetrieveManager(peers, leth.reqDist, leth.serverPool.GetTimeout)
+	// leth.relay = newLesTxRelay(peers, leth.retriever)
 
-	leth.odr = NewLesOdr(chainDb, light.DefaultClientIndexerConfig, leth.peers, leth.retriever)
-	leth.chtIndexer = light.NewChtIndexer(chainDb, leth.odr, params.CHTFrequency, params.HelperTrieConfirmations, config.LightNoPrune)
-	leth.bloomTrieIndexer = light.NewBloomTrieIndexer(chainDb, leth.odr, params.BloomBitsBlocksClient, params.BloomTrieFrequency, config.LightNoPrune)
-	leth.odr.SetIndexers(leth.chtIndexer, leth.bloomTrieIndexer, leth.bloomIndexer)
+	// leth.odr = NewLesOdr(chainDb, light.DefaultClientIndexerConfig, leth.peers, leth.retriever)
+	// leth.chtIndexer = light.NewChtIndexer(chainDb, leth.odr, params.CHTFrequency, params.HelperTrieConfirmations, config.LightNoPrune)
+	// leth.bloomTrieIndexer = light.NewBloomTrieIndexer(chainDb, leth.odr, params.BloomBitsBlocksClient, params.BloomTrieFrequency, config.LightNoPrune)
+	// leth.odr.SetIndexers(leth.chtIndexer, leth.bloomTrieIndexer, leth.bloomIndexer)
 
-	checkpoint := config.Checkpoint
-	if checkpoint == nil {
-		checkpoint = params.TrustedCheckpoints[genesisHash]
-	}
-	// Note: NewLightChain adds the trusted checkpoint so it needs an ODR with
-	// indexers already set but not started yet
-	if leth.blockchain, err = light.NewLightChain(leth.odr, leth.chainConfig, leth.engine, checkpoint); err != nil {
-		return nil, err
-	}
-	leth.chainReader = leth.blockchain
-	leth.txPool = light.NewTxPool(leth.chainConfig, leth.blockchain, leth.relay)
+	// checkpoint := config.Checkpoint
+	// if checkpoint == nil {
+	// 	checkpoint = params.TrustedCheckpoints[genesisHash]
+	// }
+	// // Note: NewLightChain adds the trusted checkpoint so it needs an ODR with
+	// // indexers already set but not started yet
+	// if leth.blockchain, err = light.NewLightChain(leth.odr, leth.chainConfig, leth.engine, checkpoint); err != nil {
+	// 	return nil, err
+	// }
+	// leth.chainReader = leth.blockchain
+	// leth.txPool = light.NewTxPool(leth.chainConfig, leth.blockchain, leth.relay)
 
-	// Set up checkpoint oracle.
-	leth.oracle = leth.setupOracle(stack, genesisHash, config)
+	// // Set up checkpoint oracle.
+	// leth.oracle = leth.setupOracle(stack, genesisHash, config)
 
-	// Note: AddChildIndexer starts the update process for the child
-	leth.bloomIndexer.AddChildIndexer(leth.bloomTrieIndexer)
-	leth.chtIndexer.Start(leth.blockchain)
-	leth.bloomIndexer.Start(leth.blockchain)
+	// // Note: AddChildIndexer starts the update process for the child
+	// leth.bloomIndexer.AddChildIndexer(leth.bloomTrieIndexer)
+	// leth.chtIndexer.Start(leth.blockchain)
+	// leth.bloomIndexer.Start(leth.blockchain)
 
-	// Start a light chain pruner to delete useless historical data.
-	leth.pruner = newPruner(chainDb, leth.chtIndexer, leth.bloomTrieIndexer)
+	// // Start a light chain pruner to delete useless historical data.
+	// leth.pruner = newPruner(chainDb, leth.chtIndexer, leth.bloomTrieIndexer)
 
-	// Rewind the chain in case of an incompatible config upgrade.
-	if compat, ok := genesisErr.(*params.ConfigCompatError); ok {
-		log.Warn("Rewinding chain to upgrade configuration", "err", compat)
-		leth.blockchain.SetHead(compat.RewindTo)
-		rawdb.WriteChainConfig(chainDb, genesisHash, chainConfig)
-	}
+	// // Rewind the chain in case of an incompatible config upgrade.
+	// if compat, ok := genesisErr.(*params.ConfigCompatError); ok {
+	// 	log.Warn("Rewinding chain to upgrade configuration", "err", compat)
+	// 	leth.blockchain.SetHead(compat.RewindTo)
+	// 	rawdb.WriteChainConfig(chainDb, genesisHash, chainConfig)
+	// }
 
-	leth.ApiBackend = &LesApiBackend{stack.Config().ExtRPCEnabled(), stack.Config().AllowUnprotectedTxs, leth, nil}
-	gpoParams := config.GPO
-	if gpoParams.Default == nil {
-		gpoParams.Default = config.Miner.GasPrice
-	}
-	leth.ApiBackend.gpo = gasprice.NewOracle(leth.ApiBackend, gpoParams)
+	// leth.ApiBackend = &LesApiBackend{stack.Config().ExtRPCEnabled(), stack.Config().AllowUnprotectedTxs, leth, nil}
+	// gpoParams := config.GPO
+	// if gpoParams.Default == nil {
+	// 	gpoParams.Default = config.Miner.GasPrice
+	// }
+	// leth.ApiBackend.gpo = gasprice.NewOracle(leth.ApiBackend, gpoParams)
 
-	leth.handler = newClientHandler(config.UltraLightServers, config.UltraLightFraction, checkpoint, leth)
-	if leth.handler.ulc != nil {
-		log.Warn("Ultra light client is enabled", "trustedNodes", len(leth.handler.ulc.keys), "minTrustedFraction", leth.handler.ulc.fraction)
-		leth.blockchain.DisableCheckFreq()
-	}
+	// leth.handler = newClientHandler(config.UltraLightServers, config.UltraLightFraction, checkpoint, leth)
+	// if leth.handler.ulc != nil {
+	// 	log.Warn("Ultra light client is enabled", "trustedNodes", len(leth.handler.ulc.keys), "minTrustedFraction", leth.handler.ulc.fraction)
+	// 	leth.blockchain.DisableCheckFreq()
+	// }
 
-	leth.netRPCService = ethapi.NewPublicNetAPI(leth.p2pServer, leth.config.NetworkId)
+	// leth.netRPCService = ethapi.NewPublicNetAPI(leth.p2pServer, leth.config.NetworkId)
 
-	// Register the backend on the node
-	stack.RegisterAPIs(leth.APIs())
-	stack.RegisterProtocols(leth.Protocols())
-	stack.RegisterLifecycle(leth)
+	// // Register the backend on the node
+	// stack.RegisterAPIs(leth.APIs())
+	// stack.RegisterProtocols(leth.Protocols())
+	// stack.RegisterLifecycle(leth)
 
-	// Check for unclean shutdown
-	if uncleanShutdowns, discards, err := rawdb.PushUncleanShutdownMarker(chainDb); err != nil {
-		log.Error("Could not update unclean-shutdown-marker list", "error", err)
-	} else {
-		if discards > 0 {
-			log.Warn("Old unclean shutdowns found", "count", discards)
-		}
-		for _, tstamp := range uncleanShutdowns {
-			t := time.Unix(int64(tstamp), 0)
-			log.Warn("Unclean shutdown detected", "booted", t,
-				"age", common.PrettyAge(t))
-		}
-	}
-	return leth, nil
+	// // Check for unclean shutdown
+	// if uncleanShutdowns, discards, err := rawdb.PushUncleanShutdownMarker(chainDb); err != nil {
+	// 	log.Error("Could not update unclean-shutdown-marker list", "error", err)
+	// } else {
+	// 	if discards > 0 {
+	// 		log.Warn("Old unclean shutdowns found", "count", discards)
+	// 	}
+	// 	for _, tstamp := range uncleanShutdowns {
+	// 		t := time.Unix(int64(tstamp), 0)
+	// 		log.Warn("Unclean shutdown detected", "booted", t,
+	// 			"age", common.PrettyAge(t))
+	// 	}
+	// }
+	// return leth, nil
+	return nil, fmt.Errorf("light client is disabled for security reasons")
 }
 
 // VfluxRequest sends a batch of requests to the given node through discv5 UDP TalkRequest and returns the responses
