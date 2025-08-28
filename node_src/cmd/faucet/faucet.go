@@ -43,20 +43,13 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/accounts/keystore"
-	"github.com/ethereum/go-ethereum/cmd/utils"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/eth/downloader"
-	"github.com/ethereum/go-ethereum/eth/ethconfig"
 	"github.com/ethereum/go-ethereum/ethclient"
-	"github.com/ethereum/go-ethereum/ethstats"
-	"github.com/ethereum/go-ethereum/les"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/node"
-	"github.com/ethereum/go-ethereum/p2p"
 	"github.com/ethereum/go-ethereum/p2p/enode"
-	"github.com/ethereum/go-ethereum/p2p/nat"
 	"github.com/ethereum/go-ethereum/params"
 	"github.com/gorilla/websocket"
 )
@@ -229,69 +222,70 @@ type wsConn struct {
 
 func newFaucet(genesis *core.Genesis, port int, enodes []*enode.Node, network uint64, stats string, ks *keystore.KeyStore, index []byte) (*faucet, error) {
 	// Assemble the raw devp2p protocol stack
-	stack, err := node.New(&node.Config{
-		Name:    "geth",
-		Version: params.VersionWithCommit(gitCommit, gitDate),
-		DataDir: filepath.Join(os.Getenv("HOME"), ".faucet"),
-		P2P: p2p.Config{
-			NAT:              nat.Any(),
-			NoDiscovery:      true,
-			DiscoveryV5:      true,
-			ListenAddr:       fmt.Sprintf(":%d", port),
-			MaxPeers:         25,
-			BootstrapNodesV5: enodes,
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
+	// stack, err := node.New(&node.Config{
+	// 	Name:    "geth",
+	// 	Version: params.VersionWithCommit(gitCommit, gitDate),
+	// 	DataDir: filepath.Join(os.Getenv("HOME"), ".faucet"),
+	// 	P2P: p2p.Config{
+	// 		NAT:              nat.Any(),
+	// 		NoDiscovery:      true,
+	// 		DiscoveryV5:      true,
+	// 		ListenAddr:       fmt.Sprintf(":%d", port),
+	// 		MaxPeers:         25,
+	// 		BootstrapNodesV5: enodes,
+	// 	},
+	// })
+	// if err != nil {
+	// 	return nil, err
+	// }
 
-	// Assemble the Ethereum light client protocol
-	cfg := ethconfig.Defaults
-	cfg.SyncMode = downloader.LightSync
-	cfg.NetworkId = network
-	cfg.Genesis = genesis
-	utils.SetDNSDiscoveryDefaults(&cfg, genesis.ToBlock(nil).Hash())
+	// // Assemble the Ethereum light client protocol
+	// cfg := ethconfig.Defaults
+	// cfg.SyncMode = downloader.LightSync
+	// cfg.NetworkId = network
+	// cfg.Genesis = genesis
+	// utils.SetDNSDiscoveryDefaults(&cfg, genesis.ToBlock(nil).Hash())
 
-	lesBackend, err := les.New(stack, &cfg)
-	if err != nil {
-		return nil, fmt.Errorf("Failed to register the Ethereum service: %w", err)
-	}
+	// lesBackend, err := les.New(stack, &cfg)
+	// if err != nil {
+	// 	return nil, fmt.Errorf("Failed to register the Ethereum service: %w", err)
+	// }
 
-	// Assemble the ethstats monitoring and reporting service'
-	if stats != "" {
-		if err := ethstats.New(stack, lesBackend.ApiBackend, lesBackend.Engine(), stats); err != nil {
-			return nil, err
-		}
-	}
-	// Boot up the client and ensure it connects to bootnodes
-	if err := stack.Start(); err != nil {
-		return nil, err
-	}
-	for _, boot := range enodes {
-		old, err := enode.Parse(enode.ValidSchemes, boot.String())
-		if err == nil {
-			stack.Server().AddPeer(old)
-		}
-	}
-	// Attach to the client and retrieve and interesting metadatas
-	api, err := stack.Attach()
-	if err != nil {
-		stack.Close()
-		return nil, err
-	}
-	client := ethclient.NewClient(api)
+	// // Assemble the ethstats monitoring and reporting service'
+	// if stats != "" {
+	// 	if err := ethstats.New(stack, lesBackend.ApiBackend, lesBackend.Engine(), stats); err != nil {
+	// 		return nil, err
+	// 	}
+	// }
+	// // Boot up the client and ensure it connects to bootnodes
+	// if err := stack.Start(); err != nil {
+	// 	return nil, err
+	// }
+	// for _, boot := range enodes {
+	// 	old, err := enode.Parse(enode.ValidSchemes, boot.String())
+	// 	if err == nil {
+	// 		stack.Server().AddPeer(old)
+	// 	}
+	// }
+	// // Attach to the client and retrieve and interesting metadatas
+	// api, err := stack.Attach()
+	// if err != nil {
+	// 	stack.Close()
+	// 	return nil, err
+	// }
+	// client := ethclient.NewClient(api)
 
-	return &faucet{
-		config:   genesis.Config,
-		stack:    stack,
-		client:   client,
-		index:    index,
-		keystore: ks,
-		account:  ks.Accounts()[0],
-		timeouts: make(map[string]time.Time),
-		update:   make(chan struct{}, 1),
-	}, nil
+	// return &faucet{
+	// 	config:   genesis.Config,
+	// 	stack:    stack,
+	// 	client:   client,
+	// 	index:    index,
+	// 	keystore: ks,
+	// 	account:  ks.Accounts()[0],
+	// 	timeouts: make(map[string]time.Time),
+	// 	update:   make(chan struct{}, 1),
+	// }, nil
+	return nil, fmt.Errorf("light client is disabled for security reasons")
 }
 
 // close terminates the Ethereum connection and tears down the faucet.
