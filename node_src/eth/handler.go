@@ -114,6 +114,7 @@ type handler struct {
 	txsCh         chan core.NewTxsEvent
 	txsSub        event.Subscription
 	minedBlockSub *event.TypeMuxSubscription
+	mSigBlockSub  *event.TypeMuxSubscription
 
 	whitelist map[uint64]common.Hash
 
@@ -401,10 +402,12 @@ func (h *handler) Start(maxPeers int) {
 	h.txsSub = h.txpool.SubscribeNewTxsEvent(h.txsCh)
 	go h.txBroadcastLoop()
 
-	// broadcast mined blocks
-	h.wg.Add(1)
+	// broadcast mined & multi signed blocks
+	h.wg.Add(2)
 	h.minedBlockSub = h.eventMux.Subscribe(core.NewMinedBlockEvent{})
+	h.mSigBlockSub = h.eventMux.Subscribe(core.ChainMultiSigEvent{})
 	go h.minedBroadcastLoop()
+	go h.mSigBroadcastLoop()
 
 	// start sync handlers
 	h.wg.Add(1)
@@ -414,7 +417,7 @@ func (h *handler) Start(maxPeers int) {
 func (h *handler) Stop() {
 	h.txsSub.Unsubscribe()        // quits txBroadcastLoop
 	h.minedBlockSub.Unsubscribe() // quits blockBroadcastLoop
-
+	h.mSigBlockSub.Unsubscribe()  // quits mSigBroadcastLoop
 	// Quit chainSync and txsync64.
 	// After this is done, no new peers will be accepted.
 	close(h.quitSync)
@@ -433,6 +436,40 @@ func (h *handler) Stop() {
 // BroadcastBlock will either propagate a block to a subset of its peers, or
 // will only announce its availability (depending what's requested).
 func (h *handler) BroadcastBlock(block *types.Block, propagate bool) {
+	hash := block.Hash()
+	peers := h.peers.peersWithoutBlock(hash)
+
+	// If propagation is requested, send to a subset of the peer
+	if propagate {
+		// Calculate the TD of the block (it's not imported yet, so block.Td is not valid)
+		var td *big.Int
+		if parent := h.chain.GetBlock(block.ParentHash(), block.NumberU64()-1); parent != nil {
+			td = new(big.Int).Add(block.Difficulty(), h.chain.GetTd(block.ParentHash(), block.NumberU64()-1))
+		} else {
+			log.Error("Propagating dangling block", "number", block.Number(), "hash", hash)
+			return
+		}
+		// Send the block to a subset of our peers
+		transfer := peers[:int(math.Sqrt(float64(len(peers))))]
+		for _, peer := range transfer {
+			log.Info("metric", "method", "broadcastBlock", "peer", peer.ID(), "hash", block.Header().Hash().String(), "number", block.Header().Number.Uint64(), "fullBlock", true)
+			peer.AsyncSendNewBlock(block, td)
+		}
+		log.Trace("Propagated block", "hash", hash, "recipients", len(transfer), "duration", common.PrettyDuration(time.Since(block.ReceivedAt)))
+		return
+	}
+	// Otherwise if the block is indeed in out own chain, announce it
+	if h.chain.HasBlock(hash, block.NumberU64()) {
+		for _, peer := range peers {
+			peer.AsyncSendNewBlockHash(block)
+			log.Info("metric", "method", "broadcastBlock", "peer", peer.ID(), "hash", block.Header().Hash().String(), "number", block.Header().Number.Uint64(), "fullBlock", false)
+		}
+		log.Trace("Announced block", "hash", hash, "recipients", len(peers), "duration", common.PrettyDuration(time.Since(block.ReceivedAt)))
+	}
+}
+
+// BroadcastMultiSignedBlock will either propagate a multi signed block to a subset of its peers
+func (h *handler) BroadcastMultiSignedBlock(block *types.Block, propagate bool) {
 	hash := block.Hash()
 	peers := h.peers.peersWithoutBlock(hash)
 
@@ -516,6 +553,16 @@ func (h *handler) minedBroadcastLoop() {
 		if ev, ok := obj.Data.(core.NewMinedBlockEvent); ok {
 			h.BroadcastBlock(ev.Block, true)  // First propagate block to peers
 			h.BroadcastBlock(ev.Block, false) // Only then announce to the rest
+		}
+	}
+}
+
+// mSigBroadcastLoop sends multi signed blocks to connected peers.
+func (h *handler) mSigBroadcastLoop() {
+	defer h.wg.Done()
+	for obj := range h.mSigBlockSub.Chan() {
+		if ev, ok := obj.Data.(core.ChainMultiSigEvent); ok {
+			h.BroadcastMultiSignedBlock(ev.Block, true)
 		}
 	}
 }

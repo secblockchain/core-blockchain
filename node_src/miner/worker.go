@@ -52,6 +52,9 @@ const (
 	// chainSideChanSize is the size of channel listening to ChainSideEvent.
 	chainSideChanSize = 10
 
+	// chainMultiSigChanSize is the size of channel listening to ChainMultiSigEvent.
+	chainMultiSigChanSize = 10
+
 	// resubmitAdjustChanSize is the size of resubmitting interval adjustment channel.
 	resubmitAdjustChanSize = 10
 
@@ -144,14 +147,17 @@ type worker struct {
 	txsCh        chan core.NewTxsEvent
 	txsSub       event.Subscription
 	chainHeadCh  chan core.ChainHeadEvent
-	chainHeadSub event.Subscription
 	chainSideCh  chan core.ChainSideEvent
+	mSigEventCh  chan core.ChainMultiSigEvent // A channel for multi-signing request events from peers
+	chainHeadSub event.Subscription
 	chainSideSub event.Subscription
+	mSigSub      event.Subscription
 
 	// Channels
 	newWorkCh          chan *newWorkReq
 	taskCh             chan *task
 	resultCh           chan *types.Block
+	mSigCh             chan *types.Block // A channel for local mined blocks to be broadcasted for multi-signing
 	startCh            chan struct{}
 	exitCh             chan struct{}
 	resubmitIntervalCh chan time.Duration
@@ -216,6 +222,8 @@ func newWorker(config *Config, chainConfig *params.ChainConfig, engine consensus
 		txsCh:              make(chan core.NewTxsEvent, txChanSize),
 		chainHeadCh:        make(chan core.ChainHeadEvent, chainHeadChanSize),
 		chainSideCh:        make(chan core.ChainSideEvent, chainSideChanSize),
+		mSigCh:             make(chan *types.Block, chainMultiSigChanSize),
+		mSigEventCh:        make(chan core.ChainMultiSigEvent, chainMultiSigChanSize),
 		newWorkCh:          make(chan *newWorkReq),
 		taskCh:             make(chan *task),
 		resultCh:           make(chan *types.Block, resultQueueSize),
@@ -229,6 +237,7 @@ func newWorker(config *Config, chainConfig *params.ChainConfig, engine consensus
 	// Subscribe events for blockchain
 	worker.chainHeadSub = eth.BlockChain().SubscribeChainHeadEvent(worker.chainHeadCh)
 	worker.chainSideSub = eth.BlockChain().SubscribeChainSideEvent(worker.chainSideCh)
+	worker.mSigSub = eth.BlockChain().SubscribeChainMultiSigEvent(worker.mSigEventCh)
 
 	// Sanitize recommit interval if the user-specified one is too short.
 	recommit := worker.config.Recommit
@@ -237,11 +246,12 @@ func newWorker(config *Config, chainConfig *params.ChainConfig, engine consensus
 		recommit = minRecommitInterval
 	}
 
-	worker.wg.Add(4)
+	worker.wg.Add(5)
 	go worker.mainLoop()
 	go worker.newWorkLoop(recommit)
 	go worker.resultLoop()
 	go worker.taskLoop()
+	go worker.multiSignLoop()
 
 	// Submit first work to initialize pending state.
 	if init {
@@ -462,6 +472,7 @@ func (w *worker) mainLoop() {
 	defer w.txsSub.Unsubscribe()
 	defer w.chainHeadSub.Unsubscribe()
 	defer w.chainSideSub.Unsubscribe()
+	defer w.mSigSub.Unsubscribe()
 	defer func() {
 		if w.current != nil && w.current.state != nil {
 			w.current.state.StopPrefetcher()
@@ -559,6 +570,8 @@ func (w *worker) mainLoop() {
 			return
 		case <-w.chainSideSub.Err():
 			return
+		case <-w.mSigSub.Err():
+			return
 		}
 	}
 }
@@ -601,7 +614,7 @@ func (w *worker) taskLoop() {
 			w.pendingTasks[sealHash] = task
 			w.pendingMu.Unlock()
 
-			if err := w.engine.Seal(w.chain, task.block, w.resultCh, stopCh); err != nil {
+			if err := w.engine.Seal(w.chain, task.block, w.mSigCh, stopCh); err != nil {
 				log.Warn("Block sealing failed", "err", err)
 				w.pendingMu.Lock()
 				delete(w.pendingTasks, sealHash)
@@ -611,6 +624,49 @@ func (w *worker) taskLoop() {
 			interrupt()
 			return
 		}
+	}
+}
+
+func (w *worker) multiSignLoop() {
+	defer w.wg.Done()
+
+	stopCh := make(chan struct{})
+
+	for {
+		select {
+		case block := <-w.mSigCh:
+			if block == nil {
+				continue
+			}
+			if w.chain.HasBlock(block.Hash(), block.NumberU64()) {
+				continue
+			}
+
+			w.mux.Post(core.ChainMultiSigEvent{Block: block, Signers: []common.Address{w.coinbase}})
+
+		case req := <-w.mSigEventCh:
+			if req.Block == nil {
+				continue
+			}
+			if w.chain.HasBlock(req.Block.Hash(), req.Block.NumberU64()) {
+				continue
+			}
+
+			if req.Block.Coinbase() == w.coinbase && len(req.Signers) >= w.engine.(consensus.PoSA).GetValidatorsCount(w.chain, req.Block)*2/3 {
+				w.resultCh <- req.Block
+				continue
+			}
+
+			if err := w.engine.(consensus.PoSA).SealMulti(w.chain, req.Block, req.Signers, stopCh); err != nil {
+				log.Warn("Block sealing failed", "err", err)
+			}
+
+			w.mux.Post(core.ChainMultiSigEvent{Block: req.Block, Signers: append(req.Signers, w.coinbase)})
+
+		case <-w.exitCh:
+			return
+		}
+
 	}
 }
 
@@ -792,125 +848,112 @@ func (w *worker) commitTransaction(tx *types.Transaction, coinbase common.Addres
 	return receipt.Logs, nil
 }
 
-
-
-
-
 func (w *worker) commitTransactions(txs *types.TransactionsByPriceAndNonce, coinbase common.Address, interrupt *int32) bool {
-    if w.current == nil {
-        return true
-    }
+	if w.current == nil {
+		return true
+	}
 
-    gasLimit := w.current.header.GasLimit
-    if w.current.gasPool == nil {
-        w.current.gasPool = new(core.GasPool).AddGas(gasLimit)
-    }
+	gasLimit := w.current.header.GasLimit
+	if w.current.gasPool == nil {
+		w.current.gasPool = new(core.GasPool).AddGas(gasLimit)
+	}
 
-    var coalescedLogs []*types.Log
-    iterationCount := 0
-    const maxTransactions = 505000
-    const maxIterations = 550000
-    const interruptIterationThreshold = 510000
+	var coalescedLogs []*types.Log
+	iterationCount := 0
+	const maxTransactions = 505000
+	const maxIterations = 550000
+	const interruptIterationThreshold = 510000
 
-    interruptCheck := func() bool {
-        if interrupt != nil {
-            // Delay the interrupt check if transactions exist and iterations are below the threshold
-            if iterationCount < interruptIterationThreshold && txs.Peek() != nil {
-                return false
-            }
+	interruptCheck := func() bool {
+		if interrupt != nil {
+			// Delay the interrupt check if transactions exist and iterations are below the threshold
+			if iterationCount < interruptIterationThreshold && txs.Peek() != nil {
+				return false
+			}
 
-            interruptVal := atomic.LoadInt32(interrupt)
-            if interruptVal != commitInterruptNone {
-                if interruptVal == commitInterruptResubmit {
-                    ratio := float64(gasLimit-w.current.gasPool.Gas()) / float64(gasLimit)
-                    if ratio < 0.1 {
-                        ratio = 0.1
-                    }
-                    w.resubmitAdjustCh <- &intervalAdjust{
-                        ratio: ratio,
-                        inc:   true,
-                    }
-                }
-                return interruptVal == commitInterruptNewHead
-            }
-        }
-        return false
-    }
+			interruptVal := atomic.LoadInt32(interrupt)
+			if interruptVal != commitInterruptNone {
+				if interruptVal == commitInterruptResubmit {
+					ratio := float64(gasLimit-w.current.gasPool.Gas()) / float64(gasLimit)
+					if ratio < 0.1 {
+						ratio = 0.1
+					}
+					w.resubmitAdjustCh <- &intervalAdjust{
+						ratio: ratio,
+						inc:   true,
+					}
+				}
+				return interruptVal == commitInterruptNewHead
+			}
+		}
+		return false
+	}
 
-    for iterationCount = 0; iterationCount < maxIterations; iterationCount++ {
-        if interruptCheck() {
-            log.Info("Iteration interrupted", "iterationCount", iterationCount)
-            return false
-        }
+	for iterationCount = 0; iterationCount < maxIterations; iterationCount++ {
+		if interruptCheck() {
+			log.Info("Iteration interrupted", "iterationCount", iterationCount)
+			return false
+		}
 
-        if w.current.tcount >= maxTransactions || w.current.gasPool.Gas() < params.TxGas {
-            log.Info("Exiting loop", "reason", "Gas limit or max transactions reached", "iterationCount", iterationCount)
-            break
-        }
+		if w.current.tcount >= maxTransactions || w.current.gasPool.Gas() < params.TxGas {
+			log.Info("Exiting loop", "reason", "Gas limit or max transactions reached", "iterationCount", iterationCount)
+			break
+		}
 
-        tx := txs.Peek()
-        if tx == nil {
-            log.Info("Exiting loop", "reason", "No more transactions", "iterationCount", iterationCount)
-            break
-        }
+		tx := txs.Peek()
+		if tx == nil {
+			log.Info("Exiting loop", "reason", "No more transactions", "iterationCount", iterationCount)
+			break
+		}
 
-        from, _ := types.Sender(w.current.signer, tx)
-        if tx.Protected() && !w.chainConfig.IsEIP155(w.current.header.Number) {
-            txs.Pop()
-            continue
-        }
+		from, _ := types.Sender(w.current.signer, tx)
+		if tx.Protected() && !w.chainConfig.IsEIP155(w.current.header.Number) {
+			txs.Pop()
+			continue
+		}
 
-        if w.isPoSA {
-            if err := w.posa.ValidateTx(from, tx, w.current.header, w.current.state); err != nil {
-                txs.Pop()
-                continue
-            }
-        }
+		if w.isPoSA {
+			if err := w.posa.ValidateTx(from, tx, w.current.header, w.current.state); err != nil {
+				txs.Pop()
+				continue
+			}
+		}
 
-        w.current.state.Prepare(tx.Hash(), w.current.tcount)
-        logs, err := w.commitTransaction(tx, coinbase)
+		w.current.state.Prepare(tx.Hash(), w.current.tcount)
+		logs, err := w.commitTransaction(tx, coinbase)
 
-        if err != nil {
-            switch {
-            case errors.Is(err, core.ErrGasLimitReached):
-                txs.Pop()
-            case errors.Is(err, core.ErrNonceTooLow):
-                txs.Shift()
-            case errors.Is(err, core.ErrNonceTooHigh):
-                txs.Pop()
-            case errors.Is(err, core.ErrTxTypeNotSupported):
-                txs.Pop()
-            default:
-                txs.Shift()
-            }
-            continue
-        }
+		if err != nil {
+			switch {
+			case errors.Is(err, core.ErrGasLimitReached):
+				txs.Pop()
+			case errors.Is(err, core.ErrNonceTooLow):
+				txs.Shift()
+			case errors.Is(err, core.ErrNonceTooHigh):
+				txs.Pop()
+			case errors.Is(err, core.ErrTxTypeNotSupported):
+				txs.Pop()
+			default:
+				txs.Shift()
+			}
+			continue
+		}
 
-        coalescedLogs = append(coalescedLogs, logs...)
-        w.current.tcount++
-        txs.Shift()
-    }
+		coalescedLogs = append(coalescedLogs, logs...)
+		w.current.tcount++
+		txs.Shift()
+	}
 
-    log.Info("Completed commitTransactions", "iterationCount", iterationCount)
+	log.Info("Completed commitTransactions", "iterationCount", iterationCount)
 
-    if !w.isRunning() && len(coalescedLogs) > 0 {
-        w.pendingLogsFeed.Send(coalescedLogs)
-    }
+	if !w.isRunning() && len(coalescedLogs) > 0 {
+		w.pendingLogsFeed.Send(coalescedLogs)
+	}
 
-    if interrupt != nil {
-        w.resubmitAdjustCh <- &intervalAdjust{inc: false}
-    }
-    return false
+	if interrupt != nil {
+		w.resubmitAdjustCh <- &intervalAdjust{inc: false}
+	}
+	return false
 }
-
-
-
-
-
-
-
-
-
 
 // commitNewWork generates several new sealing tasks based on the parent block.
 func (w *worker) commitNewWork(interrupt *int32, noempty bool, timestamp int64) {
@@ -1114,4 +1157,3 @@ func totalFees(block *types.Block, receipts []*types.Receipt) *big.Float {
 	}
 	return new(big.Float).Quo(new(big.Float).SetInt(feesWei), new(big.Float).SetInt(big.NewInt(params.Ether)))
 }
-

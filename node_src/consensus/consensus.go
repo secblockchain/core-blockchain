@@ -159,6 +159,17 @@ type PoSA interface {
 	// ApplySysTx applies a system-transaction using a given evm,
 	// the main purpose of this method is for tracing a system-transaction.
 	ApplySysTx(evm *vm.EVM, state *state.StateDB, txIndex int, sender common.Address, tx *types.Transaction) (ret []byte, vmerr error, err error)
+
+	// Seal generates a new sealing request for the given input block and pushes
+	// the result into the given channel.
+	//
+	// Note, the method returns immediately and will send the result async. More
+	// than one result may also be returned depending on the consensus algorithm.
+	// SealMulti is used for multi-signing of blocks.
+	SealMulti(chain ChainHeaderReader, block *types.Block, signers []common.Address, stop <-chan struct{}) error
+
+	// GetValidatorsCount returns the number of validators.
+	GetValidatorsCount(chain ChainHeaderReader, block *types.Block) int
 }
 
 type StateReader interface {

@@ -42,3 +42,8 @@ type ChainSideEvent struct {
 }
 
 type ChainHeadEvent struct{ Block *types.Block }
+
+type ChainMultiSigEvent struct {
+	Block   *types.Block
+	Signers []common.Address
+}

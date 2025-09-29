@@ -20,8 +20,8 @@ package congress
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"sort"
-  "errors"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
@@ -175,12 +175,12 @@ func (s *Snapshot) apply(headers []*types.Header, chain consensus.ChainHeaderRea
 			}
 
 			// Need to delete recorded recent seen blocks if necessary, it may pause whole chain when validators length decreases.
-			var epochLimit uint64      
+			var epochLimit uint64
 			if len(newValidators) > 21 || len(newValidators) == 1 {
 				epochLimit = uint64(len(newValidators)/2 + 1)
 			} else { //if number > 9299500 {
 				epochLimit = 2
-			} 
+			}
 			for i := 0; i < len(snap.Validators)/2-len(newValidators)/2; i++ {
 				delete(snap.Recents, number-epochLimit-uint64(i))
 			}
@@ -194,7 +194,6 @@ func (s *Snapshot) apply(headers []*types.Header, chain consensus.ChainHeaderRea
 
 	return snap, nil
 }
-
 
 // validators retrieves the list of authorized validators in ascending order.
 func (s *Snapshot) validators() []common.Address {
