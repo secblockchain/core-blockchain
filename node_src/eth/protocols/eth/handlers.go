@@ -291,7 +291,20 @@ func handleNewMultiSignBlock(backend Backend, msg Decoder, peer *Peer) error {
 	ann.Block.ReceivedFrom = peer
 
 	// Mark the peer as owning the block
-	peer.markBlock(ann.Block.Hash())
+	peer.knownMultiSignBlocks.Add(ann.Block.Hash())
+
+	return backend.Handle(peer, ann)
+}
+
+func handleNewMultiSignResult(backend Backend, msg Decoder, peer *Peer) error {
+	// Retrieve and decode the propagated result
+	ann := new(NewMultiSignResultPacket)
+	if err := msg.Decode(ann); err != nil {
+		return fmt.Errorf("%w: message %v: %v", errDecode, msg, err)
+	}
+
+	key := ann.Block.Number().String() + ann.Signer.String()
+	peer.knownMultiSignResults.Add(common.BytesToHash([]byte(key)))
 
 	return backend.Handle(peer, ann)
 }

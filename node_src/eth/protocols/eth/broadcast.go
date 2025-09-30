@@ -37,6 +37,12 @@ type blockPropagation struct {
 	td    *big.Int
 }
 
+type multiSignBlockPropagation struct {
+	block     *types.Block
+	signature []byte
+	signer    common.Address
+}
+
 // broadcastBlocks is a write loop that multiplexes blocks and block accouncements
 // to the remote peer. The goal is to have an async writer that does not lock up
 // node internals and at the same time rate limits queued data.
@@ -54,6 +60,12 @@ func (p *Peer) broadcastBlocks() {
 				return
 			}
 			p.Log().Trace("Propagated multi signed block", "number", prop.block.Number(), "hash", prop.block.Hash(), "td", prop.td)
+
+		case prop := <-p.queuedMultiSignResults:
+			if err := p.SendNewMultiSignResult(prop.block, prop.signature, prop.signer); err != nil {
+				return
+			}
+			p.Log().Trace("Propagated multi signed result", "number", prop.block.Number(), "hash", prop.block.Hash(), "signer", prop.signer)
 
 		case block := <-p.queuedBlockAnns:
 			if err := p.SendNewBlockHashes([]common.Hash{block.Hash()}, []uint64{block.NumberU64()}); err != nil {

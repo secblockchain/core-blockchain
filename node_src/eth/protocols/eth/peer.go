@@ -84,11 +84,13 @@ type Peer struct {
 	head common.Hash // Latest advertised head block hash
 	td   *big.Int    // Latest advertised head block total difficulty
 
-	knownBlocks           *knownCache            // Set of block hashes known to be known by this peer
-	knownMultiSignBlocks  *knownCache            // Set of multi signed block hashes known to be known by this peer
-	queuedBlocks          chan *blockPropagation // Queue of blocks to broadcast to the peer
-	queuedMultiSignBlocks chan *blockPropagation // Queue of multi signed blocks to broadcast to the peer
-	queuedBlockAnns       chan *types.Block      // Queue of blocks to announce to the peer
+	knownBlocks            *knownCache                     // Set of block hashes known to be known by this peer
+	knownMultiSignBlocks   *knownCache                     // Set of multi signed block hashes known to be known by this peer
+	knownMultiSignResults  *knownCache                     // Set of multi signed result hashes known to be known by this peer
+	queuedBlocks           chan *blockPropagation          // Queue of blocks to broadcast to the peer
+	queuedMultiSignBlocks  chan *blockPropagation          // Queue of multi signed blocks to broadcast to the peer
+	queuedMultiSignResults chan *multiSignBlockPropagation // Queue of multi signed results to broadcast to the peer
+	queuedBlockAnns        chan *types.Block               // Queue of blocks to announce to the peer
 
 	txpool      TxPool             // Transaction pool used by the broadcasters for liveness checks
 	knownTxs    *knownCache        // Set of transaction hashes known to be known by this peer
@@ -169,6 +171,11 @@ func (p *Peer) KnownBlock(hash common.Hash) bool {
 // KnownMultiSignBlock returns whether peer is known to already have a multi signed block.
 func (p *Peer) KnownMultiSignBlock(hash common.Hash) bool {
 	return p.knownMultiSignBlocks.Contains(hash)
+}
+
+// KnownMultiSignResult returns whether peer is known to already have a multi signed result.
+func (p *Peer) KnownMultiSignResult(hash common.Hash) bool {
+	return p.knownMultiSignResults.Contains(hash)
 }
 
 // KnownTransaction returns whether peer is known to already have a transaction.
@@ -303,6 +310,16 @@ func (p *Peer) SendNewMultiSignBlock(block *types.Block, td *big.Int) error {
 	})
 }
 
+func (p *Peer) SendNewMultiSignResult(block *types.Block, signature []byte, signer common.Address) error {
+	// Mark all the block hash as known, but ensure we don't overflow our limits
+	p.knownMultiSignResults.Add(common.BytesToHash([]byte(block.Number().String() + signer.String())))
+	return p2p.Send(p.rw, NewMultiSignResultMsg, &NewMultiSignResultPacket{
+		Block:     block,
+		Signer:    signer,
+		Signature: signature,
+	})
+}
+
 // AsyncSendNewBlock queues an entire block for propagation to a remote peer. If
 // the peer's broadcast queue is full, the event is silently dropped.
 func (p *Peer) AsyncSendNewBlock(block *types.Block, td *big.Int) {
@@ -320,6 +337,17 @@ func (p *Peer) AsyncSendNewMultiSignBlock(block *types.Block, td *big.Int) {
 	case p.queuedMultiSignBlocks <- &blockPropagation{block: block, td: td}:
 		// Mark all the block hash as known, but ensure we don't overflow our limits
 		p.knownMultiSignBlocks.Add(block.Hash())
+	default:
+		p.Log().Debug("Dropping multi signed block propagation", "number", block.NumberU64(), "hash", block.Hash())
+	}
+}
+
+func (p *Peer) AsyncSendNewMultiSignResult(block *types.Block, signature []byte, signer common.Address) {
+	select {
+	case p.queuedMultiSignResults <- &multiSignBlockPropagation{block: block, signature: signature, signer: signer}:
+		// Mark all the block hash as known, but ensure we don't overflow our limits
+		key := block.Number().String() + signer.String()
+		p.knownMultiSignResults.Add(common.BytesToHash([]byte(key)))
 	default:
 		p.Log().Debug("Dropping multi signed block propagation", "number", block.NumberU64(), "hash", block.Hash())
 	}

@@ -66,6 +66,7 @@ const (
 	GetPooledTransactionsMsg      = 0x09
 	PooledTransactionsMsg         = 0x0a
 	NewMultiSignBlockMsg          = 0x0b
+	NewMultiSignResultMsg         = 0x0c
 )
 
 var (
@@ -186,6 +187,12 @@ type NewBlockPacket struct {
 type NewMultiSignBlockPacket struct {
 	Block *types.Block
 	TD    *big.Int
+}
+
+type NewMultiSignResultPacket struct {
+	Block     *types.Block
+	Signer    common.Address
+	Signature []byte
 }
 
 // sanityCheck verifies that the values are reasonable, as a DoS protection
@@ -350,6 +357,9 @@ func (*NewBlockPacket) Kind() byte   { return NewBlockMsg }
 
 func (*NewMultiSignBlockPacket) Name() string { return "NewMultiSignBlock" }
 func (*NewMultiSignBlockPacket) Kind() byte   { return NewMultiSignBlockMsg }
+
+func (*NewMultiSignResultPacket) Name() string { return "NewMultiSignResult" }
+func (*NewMultiSignResultPacket) Kind() byte   { return NewMultiSignResultMsg }
 
 func (*GetNodeDataPacket) Name() string { return "GetNodeData" }
 func (*GetNodeDataPacket) Kind() byte   { return GetNodeDataMsg }

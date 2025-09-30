@@ -47,6 +47,14 @@ type ChainMultiSigEvent struct {
 	Block *types.Block
 }
 
+// multi sig result that need to be sent to peers
+type ChainMultiSigResult struct {
+	Block     *types.Block
+	Signer    common.Address
+	Signature []byte
+}
+
+// multi sign result get from peers
 type ChainMultiSigResultEvent struct {
 	Block     *types.Block
 	Signer    common.Address

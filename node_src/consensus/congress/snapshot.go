@@ -26,6 +26,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
 	"github.com/ethereum/go-ethereum/params"
 	lru "github.com/hashicorp/golang-lru"
@@ -147,12 +148,9 @@ func (s *Snapshot) apply(headers []*types.Header, chain consensus.ChainHeaderRea
 		// Resolve the authorization key and check against validators
 
 		hash := header.Number.Bytes()
-		signature, ok := s.sigcache.Get(common.BytesToHash(hash))
-		if !ok {
-			return nil, errMissingSignature
-		}
+		signature := header.Extra[len(header.Extra)-extraSeal : len(header.Extra)-extraSeal+crypto.SignatureLength]
 
-		validator, err := ecrecover(common.BytesToHash(hash), signature.([]byte))
+		validator, err := ecrecover(hash, signature)
 		if err != nil {
 			return nil, err
 		}

@@ -162,10 +162,10 @@ type ValidatorFn func(validator accounts.Account, mimeType string, message []byt
 type SignTxFn func(account accounts.Account, tx *types.Transaction, chainID *big.Int) (*types.Transaction, error)
 
 // ecrecover extracts the Ethereum account address from a signed header.
-func ecrecover(hash common.Hash, signature []byte) (common.Address, error) {
+func ecrecover(hash []byte, signature []byte) (common.Address, error) {
 
 	// Recover the public key and the Ethereum address
-	pubkey, err := crypto.Ecrecover(hash.Bytes(), signature)
+	pubkey, err := crypto.Ecrecover(hash, signature)
 	if err != nil {
 		return common.Address{}, err
 	}
@@ -494,22 +494,21 @@ func (c *Congress) verifySeal(chain consensus.ChainHeaderReader, header *types.H
 		return err
 	}
 
-	// Resolve the authorization key and check against validators
-	// signer, err := ecrecover(header, c.signatures)
-
 	signatures := header.Extra[len(header.Extra)-extraSeal:]
 	hash := header.Number.Bytes()
 
 	validSignatureCount := 0
 
 	for i := 0; i < len(signatures); i += crypto.SignatureLength {
-		signer, err := ecrecover(common.BytesToHash(hash), signatures[i:i+crypto.SignatureLength-1])
+		signer, err := ecrecover(hash, signatures[i:i+crypto.SignatureLength])
 		if err != nil {
 			return err
 		}
-		if signer != header.Coinbase {
-			return errInvalidCoinbase
+
+		if _, ok := snap.Validators[signer]; !ok {
+			return errUnauthorizedValidator
 		}
+
 		validSignatureCount++
 	}
 	if validSignatureCount < int(len(snap.Validators)*2/3) {
@@ -517,11 +516,12 @@ func (c *Congress) verifySeal(chain consensus.ChainHeaderReader, header *types.H
 	}
 
 	signerSignature := header.Extra[len(header.Extra)-extraSeal : len(header.Extra)-extraSeal+crypto.SignatureLength]
-	signer, err := ecrecover(common.BytesToHash(hash), signerSignature)
+	signer, err := ecrecover(hash, signerSignature)
 
 	if err != nil {
 		return err
 	}
+
 	if signer != header.Coinbase {
 		return errInvalidCoinbase
 	}
@@ -1206,18 +1206,18 @@ func (c *Congress) Seal(chain consensus.ChainHeaderReader, block *types.Block, r
 	return nil
 }
 
-func (c *Congress) SealMulti(chain consensus.ChainHeaderReader, block *types.Block, result chan<- consensus.MultiSigResult, stop <-chan struct{}) error {
+func (c *Congress) SealMulti(chain consensus.ChainHeaderReader, block *types.Block) (*types.MultiSigResult, error) {
 	header := block.Header()
 
 	// Sealing the genesis block is not supported
 	number := header.Number.Uint64()
 	if number == 0 {
-		return errUnknownBlock
+		return nil, errUnknownBlock
 	}
 	// For 0-period chains, refuse to seal empty blocks (no reward but would spin sealing)
 	if c.config.Period == 0 && len(block.Transactions()) == 0 {
 		log.Info("Sealing paused, waiting for transactions")
-		return nil
+		return nil, nil
 	}
 	// Don't hold the val fields for the entire sealing procedure
 	c.lock.RLock()
@@ -1227,34 +1227,24 @@ func (c *Congress) SealMulti(chain consensus.ChainHeaderReader, block *types.Blo
 	// Bail out if we're unauthorized to sign a block
 	snap, err := c.snapshot(chain, number-1, header.ParentHash, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if _, authorized := snap.Validators[val]; !authorized {
-		return errUnauthorizedValidator
+		return nil, errUnauthorizedValidator
 	}
 
 	// Sign all the things!
 	sighash, err := signFn(accounts.Account{Address: val}, accounts.MimetypeCongress, header.Number.Bytes())
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	result <- consensus.MultiSigResult{
+	return &types.MultiSigResult{
 		Block:     block,
-		Validator: val,
+		Signer:    val,
 		Signature: sighash,
-	}
+	}, nil
 
-	go func() {
-		select {
-		case <-stop:
-			return
-		default:
-			log.Warn("Sealing result is not read by miner", "sealhash", SealHash(header))
-		}
-	}()
-
-	return nil
 }
 
 func (c *Congress) GetValidatorsCount(chain consensus.ChainHeaderReader, block *types.Block) int {

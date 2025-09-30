@@ -635,7 +635,7 @@ func (w *worker) taskLoop() {
 func ecrecover(header *types.Header, signature []byte) (common.Address, error) {
 
 	// Recover the public key and the Ethereum address
-	pubkey, err := crypto.Ecrecover(header.Hash().Bytes(), signature)
+	pubkey, err := crypto.Ecrecover(header.Number.Bytes(), signature)
 	if err != nil {
 		return common.Address{}, err
 	}
@@ -648,7 +648,7 @@ func ecrecover(header *types.Header, signature []byte) (common.Address, error) {
 func (w *worker) multiSignLoop() {
 	defer w.wg.Done()
 
-	validatorSignatures := make(map[common.Hash]map[common.Address][]byte)
+	validatorSignatures := make(map[uint64]map[common.Address][]byte)
 
 	for {
 		select {
@@ -667,27 +667,19 @@ func (w *worker) multiSignLoop() {
 			if req.Block == nil {
 				continue
 			}
+
 			if w.chain.HasBlock(req.Block.Hash(), req.Block.NumberU64()) {
 				continue
 			}
 
-			if req.Block.Coinbase() == w.coinbase {
-				continue
-			}
-
-			signature, err := w.engine.(consensus.PoSA).SealMulti(w.chain, req.Block)
+			res, err := w.engine.(consensus.PoSA).SealMulti(w.chain, req.Block)
 			if err != nil {
 				continue
 			}
-
-			w.mux.Post(core.ChainMultiSigResultEvent{Block: req.Block, Signer: w.coinbase, Signature: signature})
+			w.mux.Post(core.ChainMultiSigResultEvent{Block: res.Block, Signer: res.Signer, Signature: res.Signature})
 
 		case res := <-w.mSigResultCh:
 			if res.Block == nil {
-				continue
-			}
-
-			if res.Block.Coinbase() == w.coinbase {
 				continue
 			}
 
@@ -695,28 +687,31 @@ func (w *worker) multiSignLoop() {
 				continue
 			}
 
-			signer, err := ecrecover(res.Block.Header(), res.Signature)
-			if err != nil {
-				continue
-			}
-			if signer != res.Signer {
-				continue
-			}
+			if res.Block.Coinbase() == w.coinbase {
+				signer, err := ecrecover(res.Block.Header(), res.Signature)
+				if err != nil {
+					continue
+				}
+				if signer != res.Signer {
+					continue
+				}
 
-			validatorSignatures[res.Block.Hash()][signer] = res.Signature
+				if validatorSignatures[res.Block.NumberU64()] == nil {
+					validatorSignatures[res.Block.NumberU64()] = make(map[common.Address][]byte)
+				}
+				validatorSignatures[res.Block.NumberU64()][signer] = res.Signature
 
-			if len(validatorSignatures[res.Block.Hash()]) >= w.engine.(consensus.PoSA).GetValidatorsCount(w.chain, res.Block)*2/3 {
+				if len(validatorSignatures[res.Block.NumberU64()]) >= w.engine.(consensus.PoSA).GetValidatorsCount(w.chain, res.Block)*2/3 {
 
-				res.Block.Header().Extra = append(res.Block.Extra(), res.Block.Header().Hash().Bytes()...)
-				for _, signature := range validatorSignatures[res.Block.Hash()] {
+					res.Block.Header().Extra = append(res.Block.Extra(), res.Block.Header().Hash().Bytes()...)
+					for _, signature := range validatorSignatures[res.Block.NumberU64()] {
 
-					res.Block.Header().Extra = append(res.Block.Extra(), signature...)
+						res.Block.Header().Extra = append(res.Block.Extra(), signature...)
+					}
+					w.resultCh <- res.Block
+					delete(validatorSignatures, res.Block.NumberU64())
 				}
 			}
-
-			w.resultCh <- res.Block
-			delete(validatorSignatures, res.Block.Hash())
-
 		case <-w.exitCh:
 			return
 		}

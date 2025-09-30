@@ -176,6 +176,12 @@ type Block struct {
 	ReceivedFrom interface{}
 }
 
+type MultiSigResult struct {
+	Block     *Block
+	Signer    common.Address
+	Signature []byte
+}
+
 // "external" block encoding. used for eth protocol, etc.
 type extblock struct {
 	Header *Header

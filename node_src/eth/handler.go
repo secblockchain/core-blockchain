@@ -115,6 +115,7 @@ type handler struct {
 	txsSub        event.Subscription
 	minedBlockSub *event.TypeMuxSubscription
 	mSigBlockSub  *event.TypeMuxSubscription
+	mSigResultSub *event.TypeMuxSubscription
 
 	whitelist map[uint64]common.Hash
 
@@ -403,11 +404,13 @@ func (h *handler) Start(maxPeers int) {
 	go h.txBroadcastLoop()
 
 	// broadcast mined & multi signed blocks
-	h.wg.Add(2)
+	h.wg.Add(3)
 	h.minedBlockSub = h.eventMux.Subscribe(core.NewMinedBlockEvent{})
 	h.mSigBlockSub = h.eventMux.Subscribe(core.ChainMultiSigEvent{})
+	h.mSigResultSub = h.eventMux.Subscribe(core.ChainMultiSigResultEvent{})
 	go h.minedBroadcastLoop()
 	go h.mSigBroadcastLoop()
+	go h.mSigResultBroadcastLoop()
 
 	// start sync handlers
 	h.wg.Add(1)
@@ -491,6 +494,20 @@ func (h *handler) BroadcastMultiSignBlock(block *types.Block) {
 
 }
 
+// BroadcastMultiSignBlock will either propagate a multi signed block to a subset of its peers
+func (h *handler) BroadcastMultiSignResult(res *types.MultiSigResult) {
+	key := res.Block.Number().String() + res.Signer.String()
+	peers := h.peers.peersWithoutMultiSignResult(common.BytesToHash([]byte(key)))
+
+	// Send the block to a subset of our peers
+	transfer := peers[:int(math.Sqrt(float64(len(peers))))]
+	for _, peer := range transfer {
+		log.Info("metric", "method", "broadcastBlock", "peer", peer.ID(), "hash", res.Block.Header().Hash().String(), "number", res.Block.Header().Number.Uint64(), "fullBlock", true)
+		peer.AsyncSendNewMultiSignResult(res.Block, res.Signature, res.Signer)
+	}
+
+}
+
 // BroadcastTransactions will propagate a batch of transactions
 // - To a square root of all peers
 // - And, separately, as announcements to all peers which are not known to
@@ -565,6 +582,16 @@ func (h *handler) txBroadcastLoop() {
 			h.BroadcastTransactions(event.Txs)
 		case <-h.txsSub.Err():
 			return
+		}
+	}
+}
+
+// mSigResultBroadcastLoop sends multi signed result to connected peers.
+func (h *handler) mSigResultBroadcastLoop() {
+	defer h.wg.Done()
+	for obj := range h.mSigResultSub.Chan() {
+		if ev, ok := obj.Data.(core.ChainMultiSigResultEvent); ok {
+			h.BroadcastMultiSignResult(&types.MultiSigResult{Block: ev.Block, Signer: ev.Signer, Signature: ev.Signature})
 		}
 	}
 }
