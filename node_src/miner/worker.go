@@ -32,6 +32,7 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
@@ -143,16 +144,17 @@ type worker struct {
 	pendingLogsFeed event.Feed
 
 	// Subscriptions
-	mux          *event.TypeMux
-	txsCh        chan core.NewTxsEvent
-	txsSub       event.Subscription
-	chainHeadCh  chan core.ChainHeadEvent
-	chainSideCh  chan core.ChainSideEvent
-	mSigEventCh  chan core.ChainMultiSigEvent // A channel for multi-signing request events from peers
-	chainHeadSub event.Subscription
-	chainSideSub event.Subscription
-	mSigSub      event.Subscription
-
+	mux           *event.TypeMux
+	txsCh         chan core.NewTxsEvent
+	txsSub        event.Subscription
+	chainHeadCh   chan core.ChainHeadEvent
+	chainSideCh   chan core.ChainSideEvent
+	mSigRequestCh chan core.ChainMultiSigEvent       // A channel for multi-signing request events from peers
+	mSigResultCh  chan core.ChainMultiSigResultEvent // A channel for multi-signing result events from peers
+	chainHeadSub  event.Subscription
+	chainSideSub  event.Subscription
+	mSigSub       event.Subscription
+	mSigResultSub event.Subscription
 	// Channels
 	newWorkCh          chan *newWorkReq
 	taskCh             chan *task
@@ -223,7 +225,8 @@ func newWorker(config *Config, chainConfig *params.ChainConfig, engine consensus
 		chainHeadCh:        make(chan core.ChainHeadEvent, chainHeadChanSize),
 		chainSideCh:        make(chan core.ChainSideEvent, chainSideChanSize),
 		mSigCh:             make(chan *types.Block, chainMultiSigChanSize),
-		mSigEventCh:        make(chan core.ChainMultiSigEvent, chainMultiSigChanSize),
+		mSigRequestCh:      make(chan core.ChainMultiSigEvent, chainMultiSigChanSize),
+		mSigResultCh:       make(chan core.ChainMultiSigResultEvent, chainMultiSigChanSize),
 		newWorkCh:          make(chan *newWorkReq),
 		taskCh:             make(chan *task),
 		resultCh:           make(chan *types.Block, resultQueueSize),
@@ -237,7 +240,8 @@ func newWorker(config *Config, chainConfig *params.ChainConfig, engine consensus
 	// Subscribe events for blockchain
 	worker.chainHeadSub = eth.BlockChain().SubscribeChainHeadEvent(worker.chainHeadCh)
 	worker.chainSideSub = eth.BlockChain().SubscribeChainSideEvent(worker.chainSideCh)
-	worker.mSigSub = eth.BlockChain().SubscribeChainMultiSigEvent(worker.mSigEventCh)
+	worker.mSigSub = eth.BlockChain().SubscribeChainMultiSigEvent(worker.mSigRequestCh)
+	worker.mSigResultSub = eth.BlockChain().SubscribeChainMultiSigResultEvent(worker.mSigResultCh)
 
 	// Sanitize recommit interval if the user-specified one is too short.
 	recommit := worker.config.Recommit
@@ -627,10 +631,24 @@ func (w *worker) taskLoop() {
 	}
 }
 
+// ecrecover extracts the Ethereum account address from a signature and header.
+func ecrecover(header *types.Header, signature []byte) (common.Address, error) {
+
+	// Recover the public key and the Ethereum address
+	pubkey, err := crypto.Ecrecover(header.Hash().Bytes(), signature)
+	if err != nil {
+		return common.Address{}, err
+	}
+	var validator common.Address
+	copy(validator[:], crypto.Keccak256(pubkey[1:])[12:])
+
+	return validator, nil
+}
+
 func (w *worker) multiSignLoop() {
 	defer w.wg.Done()
 
-	stopCh := make(chan struct{})
+	validatorSignatures := make(map[common.Hash]map[common.Address][]byte)
 
 	for {
 		select {
@@ -642,9 +660,10 @@ func (w *worker) multiSignLoop() {
 				continue
 			}
 
-			w.mux.Post(core.ChainMultiSigEvent{Block: block, Signers: []common.Address{w.coinbase}})
+			w.mux.Post(core.ChainMultiSigEvent{Block: block})
 
-		case req := <-w.mSigEventCh:
+		case req := <-w.mSigRequestCh:
+
 			if req.Block == nil {
 				continue
 			}
@@ -652,16 +671,51 @@ func (w *worker) multiSignLoop() {
 				continue
 			}
 
-			if req.Block.Coinbase() == w.coinbase && len(req.Signers) >= w.engine.(consensus.PoSA).GetValidatorsCount(w.chain, req.Block)*2/3 {
-				w.resultCh <- req.Block
+			if req.Block.Coinbase() == w.coinbase {
 				continue
 			}
 
-			if err := w.engine.(consensus.PoSA).SealMulti(w.chain, req.Block, req.Signers, stopCh); err != nil {
-				log.Warn("Block sealing failed", "err", err)
+			signature, err := w.engine.(consensus.PoSA).SealMulti(w.chain, req.Block)
+			if err != nil {
+				continue
 			}
 
-			w.mux.Post(core.ChainMultiSigEvent{Block: req.Block, Signers: append(req.Signers, w.coinbase)})
+			w.mux.Post(core.ChainMultiSigResultEvent{Block: req.Block, Signer: w.coinbase, Signature: signature})
+
+		case res := <-w.mSigResultCh:
+			if res.Block == nil {
+				continue
+			}
+
+			if res.Block.Coinbase() == w.coinbase {
+				continue
+			}
+
+			if w.chain.HasBlock(res.Block.Hash(), res.Block.NumberU64()) {
+				continue
+			}
+
+			signer, err := ecrecover(res.Block.Header(), res.Signature)
+			if err != nil {
+				continue
+			}
+			if signer != res.Signer {
+				continue
+			}
+
+			validatorSignatures[res.Block.Hash()][signer] = res.Signature
+
+			if len(validatorSignatures[res.Block.Hash()]) >= w.engine.(consensus.PoSA).GetValidatorsCount(w.chain, res.Block)*2/3 {
+
+				res.Block.Header().Extra = append(res.Block.Extra(), res.Block.Header().Hash().Bytes()...)
+				for _, signature := range validatorSignatures[res.Block.Hash()] {
+
+					res.Block.Header().Extra = append(res.Block.Extra(), signature...)
+				}
+			}
+
+			w.resultCh <- res.Block
+			delete(validatorSignatures, res.Block.Hash())
 
 		case <-w.exitCh:
 			return
@@ -1093,6 +1147,7 @@ func (w *worker) commit(uncles []*types.Header, interval func(), update bool, st
 	copy(txs, w.current.txs)
 	s := w.current.state.Copy()
 	block, receipts, err := w.engine.FinalizeAndAssemble(w.chain, w.current.header, s, txs, uncles, cpyReceipts)
+
 	if err != nil {
 		return err
 	}

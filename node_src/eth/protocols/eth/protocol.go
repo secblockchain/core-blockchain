@@ -65,6 +65,7 @@ const (
 	NewPooledTransactionHashesMsg = 0x08
 	GetPooledTransactionsMsg      = 0x09
 	PooledTransactionsMsg         = 0x0a
+	NewMultiSignBlockMsg          = 0x0b
 )
 
 var (
@@ -178,6 +179,11 @@ type BlockHeadersPacket66 struct {
 
 // NewBlockPacket is the network packet for the block propagation message.
 type NewBlockPacket struct {
+	Block *types.Block
+	TD    *big.Int
+}
+
+type NewMultiSignBlockPacket struct {
 	Block *types.Block
 	TD    *big.Int
 }
@@ -341,6 +347,9 @@ func (*BlockBodiesPacket) Kind() byte   { return BlockBodiesMsg }
 
 func (*NewBlockPacket) Name() string { return "NewBlock" }
 func (*NewBlockPacket) Kind() byte   { return NewBlockMsg }
+
+func (*NewMultiSignBlockPacket) Name() string { return "NewMultiSignBlock" }
+func (*NewMultiSignBlockPacket) Kind() byte   { return NewMultiSignBlockMsg }
 
 func (*GetNodeDataPacket) Name() string { return "GetNodeData" }
 func (*GetNodeDataPacket) Kind() byte   { return GetNodeDataMsg }

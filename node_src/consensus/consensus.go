@@ -132,6 +132,12 @@ type PoW interface {
 	Hashrate() float64
 }
 
+type MultiSigResult struct {
+	Block     *types.Block
+	Validator common.Address
+	Signature []byte
+}
+
 // PoSA is a consensus engine based on proof-of-stake-authority.
 type PoSA interface {
 	Engine
@@ -166,7 +172,7 @@ type PoSA interface {
 	// Note, the method returns immediately and will send the result async. More
 	// than one result may also be returned depending on the consensus algorithm.
 	// SealMulti is used for multi-signing of blocks.
-	SealMulti(chain ChainHeaderReader, block *types.Block, signers []common.Address, stop <-chan struct{}) error
+	SealMulti(chain ChainHeaderReader, block *types.Block) (signature []byte, err error)
 
 	// GetValidatorsCount returns the number of validators.
 	GetValidatorsCount(chain ChainHeaderReader, block *types.Block) int

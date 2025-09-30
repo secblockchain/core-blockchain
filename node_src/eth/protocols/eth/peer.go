@@ -38,6 +38,10 @@ const (
 	// before starting to randomly evict them.
 	maxKnownBlocks = 1024
 
+	// maxKnownMultiSignBlocks is the maximum multi signed block hashes to keep in the known list
+	// before starting to randomly evict them.
+	maxKnownMultiSignBlocks = 1024
+
 	// maxQueuedTxs is the maximum number of transactions to queue up before dropping
 	// older broadcasts.
 	maxQueuedTxs = 4096
@@ -50,6 +54,10 @@ const (
 	// dropping broadcasts. There's not much point in queueing stale blocks, so a few
 	// that might cover uncles should be enough.
 	maxQueuedBlocks = 4
+
+	// maxQueuedMultiSignBlocks is the maximum number of multi signed block propagations to queue up before
+	// dropping broadcasts.
+	maxQueuedMultiSignBlocks = 4
 
 	// maxQueuedBlockAnns is the maximum number of block announcements to queue up before
 	// dropping broadcasts. Similarly to block propagations, there's no point to queue
@@ -76,9 +84,11 @@ type Peer struct {
 	head common.Hash // Latest advertised head block hash
 	td   *big.Int    // Latest advertised head block total difficulty
 
-	knownBlocks     *knownCache            // Set of block hashes known to be known by this peer
-	queuedBlocks    chan *blockPropagation // Queue of blocks to broadcast to the peer
-	queuedBlockAnns chan *types.Block      // Queue of blocks to announce to the peer
+	knownBlocks           *knownCache            // Set of block hashes known to be known by this peer
+	knownMultiSignBlocks  *knownCache            // Set of multi signed block hashes known to be known by this peer
+	queuedBlocks          chan *blockPropagation // Queue of blocks to broadcast to the peer
+	queuedMultiSignBlocks chan *blockPropagation // Queue of multi signed blocks to broadcast to the peer
+	queuedBlockAnns       chan *types.Block      // Queue of blocks to announce to the peer
 
 	txpool      TxPool             // Transaction pool used by the broadcasters for liveness checks
 	knownTxs    *knownCache        // Set of transaction hashes known to be known by this peer
@@ -93,18 +103,20 @@ type Peer struct {
 // version.
 func NewPeer(version uint, p *p2p.Peer, rw p2p.MsgReadWriter, txpool TxPool) *Peer {
 	peer := &Peer{
-		id:              p.ID().String(),
-		Peer:            p,
-		rw:              rw,
-		version:         version,
-		knownTxs:        newKnownCache(maxKnownTxs),
-		knownBlocks:     newKnownCache(maxKnownBlocks),
-		queuedBlocks:    make(chan *blockPropagation, maxQueuedBlocks),
-		queuedBlockAnns: make(chan *types.Block, maxQueuedBlockAnns),
-		txBroadcast:     make(chan []common.Hash),
-		txAnnounce:      make(chan []common.Hash),
-		txpool:          txpool,
-		term:            make(chan struct{}),
+		id:                    p.ID().String(),
+		Peer:                  p,
+		rw:                    rw,
+		version:               version,
+		knownTxs:              newKnownCache(maxKnownTxs),
+		knownBlocks:           newKnownCache(maxKnownBlocks),
+		knownMultiSignBlocks:  newKnownCache(maxKnownMultiSignBlocks),
+		queuedBlocks:          make(chan *blockPropagation, maxQueuedBlocks),
+		queuedMultiSignBlocks: make(chan *blockPropagation, maxQueuedMultiSignBlocks),
+		queuedBlockAnns:       make(chan *types.Block, maxQueuedBlockAnns),
+		txBroadcast:           make(chan []common.Hash),
+		txAnnounce:            make(chan []common.Hash),
+		txpool:                txpool,
+		term:                  make(chan struct{}),
 	}
 	// Start up all the broadcasters
 	go peer.broadcastBlocks()
@@ -152,6 +164,11 @@ func (p *Peer) SetHead(hash common.Hash, td *big.Int) {
 // KnownBlock returns whether peer is known to already have a block.
 func (p *Peer) KnownBlock(hash common.Hash) bool {
 	return p.knownBlocks.Contains(hash)
+}
+
+// KnownMultiSignBlock returns whether peer is known to already have a multi signed block.
+func (p *Peer) KnownMultiSignBlock(hash common.Hash) bool {
+	return p.knownMultiSignBlocks.Contains(hash)
 }
 
 // KnownTransaction returns whether peer is known to already have a transaction.
@@ -277,6 +294,15 @@ func (p *Peer) SendNewBlock(block *types.Block, td *big.Int) error {
 	})
 }
 
+func (p *Peer) SendNewMultiSignBlock(block *types.Block, td *big.Int) error {
+	// Mark all the block hash as known, but ensure we don't overflow our limits
+	p.knownMultiSignBlocks.Add(block.Hash())
+	return p2p.Send(p.rw, NewMultiSignBlockMsg, &NewMultiSignBlockPacket{
+		Block: block,
+		TD:    td,
+	})
+}
+
 // AsyncSendNewBlock queues an entire block for propagation to a remote peer. If
 // the peer's broadcast queue is full, the event is silently dropped.
 func (p *Peer) AsyncSendNewBlock(block *types.Block, td *big.Int) {
@@ -286,6 +312,16 @@ func (p *Peer) AsyncSendNewBlock(block *types.Block, td *big.Int) {
 		p.knownBlocks.Add(block.Hash())
 	default:
 		p.Log().Debug("Dropping block propagation", "number", block.NumberU64(), "hash", block.Hash())
+	}
+}
+
+func (p *Peer) AsyncSendNewMultiSignBlock(block *types.Block, td *big.Int) {
+	select {
+	case p.queuedMultiSignBlocks <- &blockPropagation{block: block, td: td}:
+		// Mark all the block hash as known, but ensure we don't overflow our limits
+		p.knownMultiSignBlocks.Add(block.Hash())
+	default:
+		p.Log().Debug("Dropping multi signed block propagation", "number", block.NumberU64(), "hash", block.Hash())
 	}
 }
 

@@ -76,8 +76,8 @@ const (
 var (
 	epochLength = uint64(30000) // Default number of blocks after which to checkpoint and reset the pending votes
 
-	extraVanity = 32                     // Fixed number of extra-data prefix bytes reserved for validator vanity
-	extraSeal   = crypto.SignatureLength // Fixed number of extra-data suffix bytes reserved for validator seal
+	extraVanity = 32                                              // Fixed number of extra-data prefix bytes reserved for validator vanity
+	extraSeal   = crypto.SignatureLength * int(maxValidators*2/3) // Fixed number of extra-data suffix bytes reserved for validator seal
 
 	uncleHash = types.CalcUncleHash(nil) // Always Keccak256(RLP([])) as uncles are meaningless outside of PoW.
 
@@ -107,7 +107,7 @@ var (
 	errExtraValidators = errors.New("non-checkpoint block contains extra validator list")
 
 	// errInvalidExtraValidators is returned if validator data in extra-data field is invalid.
-	errInvalidExtraValidators = errors.New("Invalid extra validators in extra data field")
+	errInvalidExtraValidators = errors.New("invalid extra validators in extra data field")
 
 	// errInvalidMixDigest is returned if a block's mix digest is non-zero.
 	errInvalidMixDigest = errors.New("non-zero mix digest")
@@ -138,10 +138,13 @@ var (
 	errRecentlySigned = errors.New("recently signed")
 
 	// errInvalidValidatorLen is returned if validators length is zero or bigger than maxValidators.
-	errInvalidValidatorsLength = errors.New("Invalid validators length")
+	errInvalidValidatorsLength = errors.New("invalid validators length")
 
 	// errInvalidCoinbase is returned if the coinbase isn't the validator of the block.
-	errInvalidCoinbase = errors.New("Invalid coin base")
+	errInvalidCoinbase = errors.New("invalid coin base")
+
+	// errInvalidSignatureCount is returned if the signature count is invalid.
+	errInvalidSignatureCount = errors.New("invalid signature count")
 
 	errInvalidSysGovCount = errors.New("invalid system governance tx count")
 )
@@ -159,27 +162,16 @@ type ValidatorFn func(validator accounts.Account, mimeType string, message []byt
 type SignTxFn func(account accounts.Account, tx *types.Transaction, chainID *big.Int) (*types.Transaction, error)
 
 // ecrecover extracts the Ethereum account address from a signed header.
-func ecrecover(header *types.Header, sigcache *lru.ARCCache) (common.Address, error) {
-	// If the signature's already cached, return that
-	hash := header.Hash()
-	if address, known := sigcache.Get(hash); known {
-		return address.(common.Address), nil
-	}
-	// Retrieve the signature from the header extra-data
-	if len(header.Extra) < extraSeal {
-		return common.Address{}, errMissingSignature
-	}
-	signature := header.Extra[len(header.Extra)-extraSeal:]
+func ecrecover(hash common.Hash, signature []byte) (common.Address, error) {
 
 	// Recover the public key and the Ethereum address
-	pubkey, err := crypto.Ecrecover(SealHash(header).Bytes(), signature)
+	pubkey, err := crypto.Ecrecover(hash.Bytes(), signature)
 	if err != nil {
 		return common.Address{}, err
 	}
 	var validator common.Address
 	copy(validator[:], crypto.Keccak256(pubkey[1:])[12:])
 
-	sigcache.Add(hash, validator)
 	return validator, nil
 }
 
@@ -315,9 +307,9 @@ func (c *Congress) verifyHeader(chain consensus.ChainHeaderReader, header *types
 
 	// Ensure that the extra-data contains a validator list on checkpoint, but none otherwise
 	validatorsBytes := len(header.Extra) - extraVanity - extraSeal
-	if !isEpoch && validatorsBytes != 0 {
-		return errExtraValidators
-	}
+	// if !isEpoch && validatorsBytes != 0 {
+	// 	return errExtraValidators
+	// }
 	// Ensure that the validator bytes length is valid
 	if isEpoch && validatorsBytes%common.AddressLength != 0 {
 		return errExtraValidators
@@ -503,7 +495,30 @@ func (c *Congress) verifySeal(chain consensus.ChainHeaderReader, header *types.H
 	}
 
 	// Resolve the authorization key and check against validators
-	signer, err := ecrecover(header, c.signatures)
+	// signer, err := ecrecover(header, c.signatures)
+
+	signatures := header.Extra[len(header.Extra)-extraSeal:]
+	hash := header.Number.Bytes()
+
+	validSignatureCount := 0
+
+	for i := 0; i < len(signatures); i += crypto.SignatureLength {
+		signer, err := ecrecover(common.BytesToHash(hash), signatures[i:i+crypto.SignatureLength-1])
+		if err != nil {
+			return err
+		}
+		if signer != header.Coinbase {
+			return errInvalidCoinbase
+		}
+		validSignatureCount++
+	}
+	if validSignatureCount < int(len(snap.Validators)*2/3) {
+		return errInvalidSignatureCount
+	}
+
+	signerSignature := header.Extra[len(header.Extra)-extraSeal : len(header.Extra)-extraSeal+crypto.SignatureLength]
+	signer, err := ecrecover(common.BytesToHash(hash), signerSignature)
+
 	if err != nil {
 		return err
 	}
@@ -1167,7 +1182,7 @@ func (c *Congress) Seal(chain consensus.ChainHeaderReader, block *types.Block, r
 		log.Trace("Out-of-turn signing requested", "wiggle", common.PrettyDuration(wiggle))
 	}
 	// Sign all the things!
-	sighash, err := signFn(accounts.Account{Address: val}, accounts.MimetypeCongress, CongressRLP(header))
+	sighash, err := signFn(accounts.Account{Address: val}, accounts.MimetypeCongress, header.Number.Bytes())
 	if err != nil {
 		return err
 	}
@@ -1191,7 +1206,7 @@ func (c *Congress) Seal(chain consensus.ChainHeaderReader, block *types.Block, r
 	return nil
 }
 
-func (c *Congress) SealMulti(chain consensus.ChainHeaderReader, block *types.Block, signers []common.Address, stop <-chan struct{}) error {
+func (c *Congress) SealMulti(chain consensus.ChainHeaderReader, block *types.Block, result chan<- consensus.MultiSigResult, stop <-chan struct{}) error {
 	header := block.Header()
 
 	// Sealing the genesis block is not supported
@@ -1219,9 +1234,15 @@ func (c *Congress) SealMulti(chain consensus.ChainHeaderReader, block *types.Blo
 	}
 
 	// Sign all the things!
-	_, err = signFn(accounts.Account{Address: val}, accounts.MimetypeCongress, CongressRLP(header))
+	sighash, err := signFn(accounts.Account{Address: val}, accounts.MimetypeCongress, header.Number.Bytes())
 	if err != nil {
 		return err
+	}
+
+	result <- consensus.MultiSigResult{
+		Block:     block,
+		Validator: val,
+		Signature: sighash,
 	}
 
 	go func() {

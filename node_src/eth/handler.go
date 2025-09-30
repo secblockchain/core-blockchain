@@ -468,38 +468,27 @@ func (h *handler) BroadcastBlock(block *types.Block, propagate bool) {
 	}
 }
 
-// BroadcastMultiSignedBlock will either propagate a multi signed block to a subset of its peers
-func (h *handler) BroadcastMultiSignedBlock(block *types.Block, propagate bool) {
+// BroadcastMultiSignBlock will either propagate a multi signed block to a subset of its peers
+func (h *handler) BroadcastMultiSignBlock(block *types.Block) {
 	hash := block.Hash()
-	peers := h.peers.peersWithoutBlock(hash)
+	peers := h.peers.peersWithoutMultiSignBlock(hash)
 
-	// If propagation is requested, send to a subset of the peer
-	if propagate {
-		// Calculate the TD of the block (it's not imported yet, so block.Td is not valid)
-		var td *big.Int
-		if parent := h.chain.GetBlock(block.ParentHash(), block.NumberU64()-1); parent != nil {
-			td = new(big.Int).Add(block.Difficulty(), h.chain.GetTd(block.ParentHash(), block.NumberU64()-1))
-		} else {
-			log.Error("Propagating dangling block", "number", block.Number(), "hash", hash)
-			return
-		}
-		// Send the block to a subset of our peers
-		transfer := peers[:int(math.Sqrt(float64(len(peers))))]
-		for _, peer := range transfer {
-			log.Info("metric", "method", "broadcastBlock", "peer", peer.ID(), "hash", block.Header().Hash().String(), "number", block.Header().Number.Uint64(), "fullBlock", true)
-			peer.AsyncSendNewBlock(block, td)
-		}
-		log.Trace("Propagated block", "hash", hash, "recipients", len(transfer), "duration", common.PrettyDuration(time.Since(block.ReceivedAt)))
+	// Calculate the TD of the block (it's not imported yet, so block.Td is not valid)
+	var td *big.Int
+	if parent := h.chain.GetBlock(block.ParentHash(), block.NumberU64()-1); parent != nil {
+		td = new(big.Int).Add(block.Difficulty(), h.chain.GetTd(block.ParentHash(), block.NumberU64()-1))
+	} else {
+		log.Error("Propagating dangling block", "number", block.Number(), "hash", hash)
 		return
 	}
-	// Otherwise if the block is indeed in out own chain, announce it
-	if h.chain.HasBlock(hash, block.NumberU64()) {
-		for _, peer := range peers {
-			peer.AsyncSendNewBlockHash(block)
-			log.Info("metric", "method", "broadcastBlock", "peer", peer.ID(), "hash", block.Header().Hash().String(), "number", block.Header().Number.Uint64(), "fullBlock", false)
-		}
-		log.Trace("Announced block", "hash", hash, "recipients", len(peers), "duration", common.PrettyDuration(time.Since(block.ReceivedAt)))
+	// Send the block to a subset of our peers
+	transfer := peers[:int(math.Sqrt(float64(len(peers))))]
+	for _, peer := range transfer {
+		log.Info("metric", "method", "broadcastBlock", "peer", peer.ID(), "hash", block.Header().Hash().String(), "number", block.Header().Number.Uint64(), "fullBlock", true)
+		peer.AsyncSendNewMultiSignBlock(block, td)
 	}
+	log.Trace("Propagated block", "hash", hash, "recipients", len(transfer), "duration", common.PrettyDuration(time.Since(block.ReceivedAt)))
+
 }
 
 // BroadcastTransactions will propagate a batch of transactions
@@ -562,7 +551,7 @@ func (h *handler) mSigBroadcastLoop() {
 	defer h.wg.Done()
 	for obj := range h.mSigBlockSub.Chan() {
 		if ev, ok := obj.Data.(core.ChainMultiSigEvent); ok {
-			h.BroadcastMultiSignedBlock(ev.Block, true)
+			h.BroadcastMultiSignBlock(ev.Block)
 		}
 	}
 }

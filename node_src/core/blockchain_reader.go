@@ -376,9 +376,14 @@ func (bc *BlockChain) SubscribeChainSideEvent(ch chan<- ChainSideEvent) event.Su
 	return bc.scope.Track(bc.chainSideFeed.Subscribe(ch))
 }
 
-// SubscribeChainSideEvent registers a subscription of ChainSideEvent.
+// SubscribeChainMultiSigEvent registers a subscription of ChainMultiSigEvent.
 func (bc *BlockChain) SubscribeChainMultiSigEvent(ch chan<- ChainMultiSigEvent) event.Subscription {
 	return bc.scope.Track(bc.chainMultiSigFeed.Subscribe(ch))
+}
+
+// SubscribeChainMultiSigResultEvent registers a subscription of ChainMultiSigResultEvent.
+func (bc *BlockChain) SubscribeChainMultiSigResultEvent(ch chan<- ChainMultiSigResultEvent) event.Subscription {
+	return bc.scope.Track(bc.chainMultiSigResultFeed.Subscribe(ch))
 }
 
 // SubscribeLogsEvent registers a subscription of []*types.Log.

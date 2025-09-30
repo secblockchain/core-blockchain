@@ -175,6 +175,7 @@ type Decoder interface {
 var eth66 = map[uint64]msgHandler{
 	NewBlockHashesMsg:             handleNewBlockhashes,
 	NewBlockMsg:                   handleNewBlock,
+	NewMultiSignBlockMsg:          handleNewMultiSignBlock,
 	TransactionsMsg:               handleTransactions,
 	NewPooledTransactionHashesMsg: handleNewPooledTransactionHashes,
 	GetBlockHeadersMsg:            handleGetBlockHeaders66,
