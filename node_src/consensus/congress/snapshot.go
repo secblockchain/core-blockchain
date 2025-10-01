@@ -147,10 +147,9 @@ func (s *Snapshot) apply(headers []*types.Header, chain consensus.ChainHeaderRea
 		}
 		// Resolve the authorization key and check against validators
 
-		hash := header.Number.Bytes()
 		signature := header.Extra[len(header.Extra)-extraSeal : len(header.Extra)-extraSeal+crypto.SignatureLength]
 
-		validator, err := ecrecover(hash, signature)
+		validator, err := ecrecover(header, signature, s.sigcache)
 		if err != nil {
 			return nil, err
 		}

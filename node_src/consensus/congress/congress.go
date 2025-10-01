@@ -162,16 +162,26 @@ type ValidatorFn func(validator accounts.Account, mimeType string, message []byt
 type SignTxFn func(account accounts.Account, tx *types.Transaction, chainID *big.Int) (*types.Transaction, error)
 
 // ecrecover extracts the Ethereum account address from a signed header.
-func ecrecover(hash []byte, signature []byte) (common.Address, error) {
+func ecrecover(header *types.Header, signature []byte, sigcache *lru.ARCCache) (common.Address, error) {
+	// If the signature's already cached, return that
+	hash := header.Hash()
+	if address, known := sigcache.Get(hash); known {
+		return address.(common.Address), nil
+	}
+	// Retrieve the signature from the header extra-data
+	if len(header.Extra) < extraSeal {
+		return common.Address{}, errMissingSignature
+	}
 
 	// Recover the public key and the Ethereum address
-	pubkey, err := crypto.Ecrecover(hash, signature)
+	pubkey, err := crypto.Ecrecover(SealHash(header).Bytes(), signature)
 	if err != nil {
 		return common.Address{}, err
 	}
 	var validator common.Address
 	copy(validator[:], crypto.Keccak256(pubkey[1:])[12:])
 
+	sigcache.Add(hash, validator)
 	return validator, nil
 }
 
@@ -412,11 +422,17 @@ func (c *Congress) snapshot(chain consensus.ChainHeaderReader, number uint64, ha
 		// up more headers than allowed to be reorged (chain reinit from a freezer),
 		// consider the checkpoint trusted and snapshot it.
 		if number == 0 || (number%c.config.Epoch == 0 && (len(headers) > params.FullImmutabilityThreshold || chain.GetHeaderByNumber(number-1) == nil)) {
+
 			checkpoint := chain.GetHeaderByNumber(number)
 			if checkpoint != nil {
 				hash := checkpoint.Hash()
+				var validators []common.Address
+				if number == 0 {
+					validators = make([]common.Address, (len(checkpoint.Extra)-extraVanity-crypto.SignatureLength)/common.AddressLength)
+				} else {
+					validators = make([]common.Address, (len(checkpoint.Extra)-extraVanity-extraSeal)/common.AddressLength)
 
-				validators := make([]common.Address, (len(checkpoint.Extra)-extraVanity-extraSeal)/common.AddressLength)
+				}
 				for i := 0; i < len(validators); i++ {
 					copy(validators[i][:], checkpoint.Extra[extraVanity+i*common.AddressLength:])
 				}
@@ -495,12 +511,12 @@ func (c *Congress) verifySeal(chain consensus.ChainHeaderReader, header *types.H
 	}
 
 	signatures := header.Extra[len(header.Extra)-extraSeal:]
-	hash := header.Number.Bytes()
 
 	validSignatureCount := 0
 
 	for i := 0; i < len(signatures); i += crypto.SignatureLength {
-		signer, err := ecrecover(hash, signatures[i:i+crypto.SignatureLength])
+
+		signer, err := ecrecover(header, signatures[i:i+crypto.SignatureLength], c.signatures)
 		if err != nil {
 			return err
 		}
@@ -516,7 +532,7 @@ func (c *Congress) verifySeal(chain consensus.ChainHeaderReader, header *types.H
 	}
 
 	signerSignature := header.Extra[len(header.Extra)-extraSeal : len(header.Extra)-extraSeal+crypto.SignatureLength]
-	signer, err := ecrecover(hash, signerSignature)
+	signer, err := ecrecover(header, signerSignature, c.signatures)
 
 	if err != nil {
 		return err
@@ -1182,7 +1198,7 @@ func (c *Congress) Seal(chain consensus.ChainHeaderReader, block *types.Block, r
 		log.Trace("Out-of-turn signing requested", "wiggle", common.PrettyDuration(wiggle))
 	}
 	// Sign all the things!
-	sighash, err := signFn(accounts.Account{Address: val}, accounts.MimetypeCongress, header.Number.Bytes())
+	sighash, err := signFn(accounts.Account{Address: val}, accounts.MimetypeCongress, CongressRLP(header))
 	if err != nil {
 		return err
 	}
@@ -1234,7 +1250,7 @@ func (c *Congress) SealMulti(chain consensus.ChainHeaderReader, block *types.Blo
 	}
 
 	// Sign all the things!
-	sighash, err := signFn(accounts.Account{Address: val}, accounts.MimetypeCongress, header.Number.Bytes())
+	sighash, err := signFn(accounts.Account{Address: val}, accounts.MimetypeCongress, CongressRLP(header))
 	if err != nil {
 		return nil, err
 	}
@@ -1245,6 +1261,10 @@ func (c *Congress) SealMulti(chain consensus.ChainHeaderReader, block *types.Blo
 		Signature: sighash,
 	}, nil
 
+}
+
+func (c *Congress) Ecrecover(header *types.Header, signature []byte) (common.Address, error) {
+	return ecrecover(header, signature, c.signatures)
 }
 
 func (c *Congress) GetValidatorsCount(chain consensus.ChainHeaderReader, block *types.Block) int {
@@ -1341,7 +1361,7 @@ func encodeSigHeader(w io.Writer, header *types.Header) {
 		header.GasLimit,
 		header.GasUsed,
 		header.Time,
-		header.Extra[:len(header.Extra)-crypto.SignatureLength], // Yes, this will panic if extra is too short
+		header.Extra[:len(header.Extra)-extraSeal], // Yes, this will panic if extra is too short
 		header.MixDigest,
 		header.Nonce,
 	})

@@ -94,6 +94,9 @@ func (h *ethHandler) Handle(peer *eth.Peer, packet eth.Packet) error {
 	case *eth.NewMultiSignBlockPacket:
 		return h.handleMultiSignBlockBroadcast(packet.Block)
 
+	case *eth.NewMultiSignResultPacket:
+		return h.handleMultiSignResultBroadcast(packet.Block, packet.Signer, packet.Signature)
+
 	case *eth.NewPooledTransactionHashesPacket:
 		return h.txFetcher.Notify(peer.ID(), *packet)
 
@@ -224,8 +227,13 @@ func (h *ethHandler) handleBlockBroadcast(peer *eth.Peer, block *types.Block, td
 // handleMultiSignBlockBroadcast is invoked from a peer's message handler when it transmits a
 // multi signed block broadcast for the local node to process.
 func (h *ethHandler) handleMultiSignBlockBroadcast(block *types.Block) error {
+	(*handler)(h).chain.SendChainMultiSigEvent(block)
 
-	(*handler)(h).eventMux.Post(core.ChainMultiSigEvent{Block: block})
+	return nil
+}
+
+func (h *ethHandler) handleMultiSignResultBroadcast(block *types.Block, signer common.Address, signature []byte) error {
+	(*handler)(h).chain.SendChainMultiSigResult(block, signer, signature)
 
 	return nil
 }

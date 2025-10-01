@@ -18,6 +18,7 @@
 package eth
 
 import (
+	"crypto/sha256"
 	"math/big"
 	"math/rand"
 	"sync"
@@ -42,6 +43,10 @@ const (
 	// before starting to randomly evict them.
 	maxKnownMultiSignBlocks = 1024
 
+	// maxKnownMultiSignResults is the maximum multi signed result hashes to keep in the known list
+	// before starting to randomly evict them.
+	maxKnownMultiSignResults = 1024
+
 	// maxQueuedTxs is the maximum number of transactions to queue up before dropping
 	// older broadcasts.
 	maxQueuedTxs = 4096
@@ -63,6 +68,11 @@ const (
 	// dropping broadcasts. Similarly to block propagations, there's no point to queue
 	// above some healthy uncle limit, so use that.
 	maxQueuedBlockAnns = 4
+
+	// maxQueuedMultiSignResults is the maximum number of multi signed result propagations to queue up before
+	// dropping them. This is a safety mechanism to prevent memory exhaustion attacks and
+	// increase the liveness of the multi signed result propagation.
+	maxQueuedMultiSignResults = 4
 )
 
 // max is a helper function which returns the larger of the two given integers.
@@ -105,20 +115,22 @@ type Peer struct {
 // version.
 func NewPeer(version uint, p *p2p.Peer, rw p2p.MsgReadWriter, txpool TxPool) *Peer {
 	peer := &Peer{
-		id:                    p.ID().String(),
-		Peer:                  p,
-		rw:                    rw,
-		version:               version,
-		knownTxs:              newKnownCache(maxKnownTxs),
-		knownBlocks:           newKnownCache(maxKnownBlocks),
-		knownMultiSignBlocks:  newKnownCache(maxKnownMultiSignBlocks),
-		queuedBlocks:          make(chan *blockPropagation, maxQueuedBlocks),
-		queuedMultiSignBlocks: make(chan *blockPropagation, maxQueuedMultiSignBlocks),
-		queuedBlockAnns:       make(chan *types.Block, maxQueuedBlockAnns),
-		txBroadcast:           make(chan []common.Hash),
-		txAnnounce:            make(chan []common.Hash),
-		txpool:                txpool,
-		term:                  make(chan struct{}),
+		id:                     p.ID().String(),
+		Peer:                   p,
+		rw:                     rw,
+		version:                version,
+		knownTxs:               newKnownCache(maxKnownTxs),
+		knownBlocks:            newKnownCache(maxKnownBlocks),
+		knownMultiSignBlocks:   newKnownCache(maxKnownMultiSignBlocks),
+		knownMultiSignResults:  newKnownCache(maxKnownMultiSignResults),
+		queuedBlocks:           make(chan *blockPropagation, maxQueuedBlocks),
+		queuedMultiSignBlocks:  make(chan *blockPropagation, maxQueuedMultiSignBlocks),
+		queuedMultiSignResults: make(chan *multiSignBlockPropagation, maxQueuedMultiSignResults),
+		queuedBlockAnns:        make(chan *types.Block, maxQueuedBlockAnns),
+		txBroadcast:            make(chan []common.Hash),
+		txAnnounce:             make(chan []common.Hash),
+		txpool:                 txpool,
+		term:                   make(chan struct{}),
 	}
 	// Start up all the broadcasters
 	go peer.broadcastBlocks()
@@ -312,7 +324,9 @@ func (p *Peer) SendNewMultiSignBlock(block *types.Block, td *big.Int) error {
 
 func (p *Peer) SendNewMultiSignResult(block *types.Block, signature []byte, signer common.Address) error {
 	// Mark all the block hash as known, but ensure we don't overflow our limits
-	p.knownMultiSignResults.Add(common.BytesToHash([]byte(block.Number().String() + signer.String())))
+	key := block.Number().String() + signer.String() + block.Hash().String()
+	sha256Hash := sha256.Sum256([]byte(key))
+	p.knownMultiSignResults.Add(sha256Hash)
 	return p2p.Send(p.rw, NewMultiSignResultMsg, &NewMultiSignResultPacket{
 		Block:     block,
 		Signer:    signer,
@@ -346,8 +360,9 @@ func (p *Peer) AsyncSendNewMultiSignResult(block *types.Block, signature []byte,
 	select {
 	case p.queuedMultiSignResults <- &multiSignBlockPropagation{block: block, signature: signature, signer: signer}:
 		// Mark all the block hash as known, but ensure we don't overflow our limits
-		key := block.Number().String() + signer.String()
-		p.knownMultiSignResults.Add(common.BytesToHash([]byte(key)))
+		key := block.Number().String() + signer.String() + block.Hash().String()
+		sha256Hash := sha256.Sum256([]byte(key))
+		p.knownMultiSignResults.Add(sha256Hash)
 	default:
 		p.Log().Debug("Dropping multi signed block propagation", "number", block.NumberU64(), "hash", block.Hash())
 	}

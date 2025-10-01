@@ -18,6 +18,7 @@
 package eth
 
 import (
+	"crypto/sha256"
 	"errors"
 	"math"
 	"math/big"
@@ -421,6 +422,7 @@ func (h *handler) Stop() {
 	h.txsSub.Unsubscribe()        // quits txBroadcastLoop
 	h.minedBlockSub.Unsubscribe() // quits blockBroadcastLoop
 	h.mSigBlockSub.Unsubscribe()  // quits mSigBroadcastLoop
+	h.mSigResultSub.Unsubscribe() // quits mSigResultBroadcastLoop
 	// Quit chainSync and txsync64.
 	// After this is done, no new peers will be accepted.
 	close(h.quitSync)
@@ -441,7 +443,6 @@ func (h *handler) Stop() {
 func (h *handler) BroadcastBlock(block *types.Block, propagate bool) {
 	hash := block.Hash()
 	peers := h.peers.peersWithoutBlock(hash)
-
 	// If propagation is requested, send to a subset of the peer
 	if propagate {
 		// Calculate the TD of the block (it's not imported yet, so block.Td is not valid)
@@ -496,9 +497,9 @@ func (h *handler) BroadcastMultiSignBlock(block *types.Block) {
 
 // BroadcastMultiSignBlock will either propagate a multi signed block to a subset of its peers
 func (h *handler) BroadcastMultiSignResult(res *types.MultiSigResult) {
-	key := res.Block.Number().String() + res.Signer.String()
-	peers := h.peers.peersWithoutMultiSignResult(common.BytesToHash([]byte(key)))
-
+	key := res.Block.Number().String() + res.Signer.String() + res.Block.Hash().String()
+	sha256Hash := sha256.Sum256([]byte(key))
+	peers := h.peers.peersWithoutMultiSignResult(sha256Hash)
 	// Send the block to a subset of our peers
 	transfer := peers[:int(math.Sqrt(float64(len(peers))))]
 	for _, peer := range transfer {
@@ -573,6 +574,15 @@ func (h *handler) mSigBroadcastLoop() {
 	}
 }
 
+func (h *handler) mSigResultBroadcastLoop() {
+	defer h.wg.Done()
+	for obj := range h.mSigResultSub.Chan() {
+		if ev, ok := obj.Data.(core.ChainMultiSigResultEvent); ok {
+			h.BroadcastMultiSignResult(&types.MultiSigResult{Block: ev.Block, Signer: ev.Signer, Signature: ev.Signature})
+		}
+	}
+}
+
 // txBroadcastLoop announces new transactions to connected peers.
 func (h *handler) txBroadcastLoop() {
 	defer h.wg.Done()
@@ -582,16 +592,6 @@ func (h *handler) txBroadcastLoop() {
 			h.BroadcastTransactions(event.Txs)
 		case <-h.txsSub.Err():
 			return
-		}
-	}
-}
-
-// mSigResultBroadcastLoop sends multi signed result to connected peers.
-func (h *handler) mSigResultBroadcastLoop() {
-	defer h.wg.Done()
-	for obj := range h.mSigResultSub.Chan() {
-		if ev, ok := obj.Data.(core.ChainMultiSigResultEvent); ok {
-			h.BroadcastMultiSignResult(&types.MultiSigResult{Block: ev.Block, Signer: ev.Signer, Signature: ev.Signature})
 		}
 	}
 }

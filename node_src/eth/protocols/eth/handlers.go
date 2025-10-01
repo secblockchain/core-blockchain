@@ -18,6 +18,7 @@
 package eth
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 
@@ -303,9 +304,9 @@ func handleNewMultiSignResult(backend Backend, msg Decoder, peer *Peer) error {
 		return fmt.Errorf("%w: message %v: %v", errDecode, msg, err)
 	}
 
-	key := ann.Block.Number().String() + ann.Signer.String()
-	peer.knownMultiSignResults.Add(common.BytesToHash([]byte(key)))
-
+	key := ann.Block.Number().String() + ann.Signer.String() + ann.Block.Hash().String()
+	sha256Hash := sha256.Sum256([]byte(key))
+	peer.knownMultiSignResults.Add(sha256Hash)
 	return backend.Handle(peer, ann)
 }
 

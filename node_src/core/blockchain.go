@@ -2222,3 +2222,11 @@ func (bc *BlockChain) InsertHeaderChain(chain []*types.Header, checkFreq int) (i
 	_, err := bc.hc.InsertHeaderChain(chain, start)
 	return 0, err
 }
+
+func (bc *BlockChain) SendChainMultiSigResult(block *types.Block, signer common.Address, signature []byte) {
+	bc.chainMultiSigResultFeed.Send(ChainMultiSigResultEvent{Block: block, Signer: signer, Signature: signature})
+}
+
+func (bc *BlockChain) SendChainMultiSigEvent(block *types.Block) {
+	bc.chainMultiSigFeed.Send(ChainMultiSigEvent{Block: block})
+}

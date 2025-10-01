@@ -28,11 +28,11 @@ import (
 	mapset "github.com/deckarep/golang-set"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/consensus"
+	"github.com/ethereum/go-ethereum/consensus/congress"
 	"github.com/ethereum/go-ethereum/consensus/misc"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
@@ -631,44 +631,37 @@ func (w *worker) taskLoop() {
 	}
 }
 
-// ecrecover extracts the Ethereum account address from a signature and header.
-func ecrecover(header *types.Header, signature []byte) (common.Address, error) {
+func (w *worker) ecrecover(header *types.Header, signature []byte) (common.Address, error) {
 
-	// Recover the public key and the Ethereum address
-	pubkey, err := crypto.Ecrecover(header.Number.Bytes(), signature)
-	if err != nil {
-		return common.Address{}, err
-	}
-	var validator common.Address
-	copy(validator[:], crypto.Keccak256(pubkey[1:])[12:])
+	return w.engine.(*congress.Congress).Ecrecover(header, signature)
 
-	return validator, nil
 }
 
 func (w *worker) multiSignLoop() {
 	defer w.wg.Done()
 
+	timer := time.NewTicker(3 * time.Second)
+	defer timer.Stop()
+
 	validatorSignatures := make(map[uint64]map[common.Address][]byte)
+	multiSignRequestTime := make(map[uint64]time.Time)
 
 	for {
 		select {
 		case block := <-w.mSigCh:
+
 			if block == nil {
 				continue
 			}
 			if w.chain.HasBlock(block.Hash(), block.NumberU64()) {
 				continue
 			}
-
+			multiSignRequestTime[block.NumberU64()] = time.Now()
+			w.chain.SendChainMultiSigEvent(block)
 			w.mux.Post(core.ChainMultiSigEvent{Block: block})
 
 		case req := <-w.mSigRequestCh:
-
 			if req.Block == nil {
-				continue
-			}
-
-			if w.chain.HasBlock(req.Block.Hash(), req.Block.NumberU64()) {
 				continue
 			}
 
@@ -676,6 +669,7 @@ func (w *worker) multiSignLoop() {
 			if err != nil {
 				continue
 			}
+			w.chain.SendChainMultiSigResult(res.Block, res.Signer, res.Signature)
 			w.mux.Post(core.ChainMultiSigResultEvent{Block: res.Block, Signer: res.Signer, Signature: res.Signature})
 
 		case res := <-w.mSigResultCh:
@@ -683,12 +677,8 @@ func (w *worker) multiSignLoop() {
 				continue
 			}
 
-			if w.chain.HasBlock(res.Block.Hash(), res.Block.NumberU64()) {
-				continue
-			}
-
 			if res.Block.Coinbase() == w.coinbase {
-				signer, err := ecrecover(res.Block.Header(), res.Signature)
+				signer, err := w.ecrecover(res.Block.Header(), res.Signature)
 				if err != nil {
 					continue
 				}
@@ -712,6 +702,15 @@ func (w *worker) multiSignLoop() {
 					delete(validatorSignatures, res.Block.NumberU64())
 				}
 			}
+		case <-timer.C:
+			now := time.Now()
+			for blockNumber, t := range multiSignRequestTime {
+				if t.Before(now.Add(-5 * time.Second)) {
+					delete(validatorSignatures, blockNumber)
+					delete(multiSignRequestTime, blockNumber)
+				}
+			}
+			w.commitNewWork(nil, false, time.Now().Unix())
 		case <-w.exitCh:
 			return
 		}
