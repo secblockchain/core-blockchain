@@ -33,6 +33,7 @@ import (
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/state"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
@@ -477,6 +478,7 @@ func (w *worker) mainLoop() {
 	defer w.chainHeadSub.Unsubscribe()
 	defer w.chainSideSub.Unsubscribe()
 	defer w.mSigSub.Unsubscribe()
+	defer w.mSigResultSub.Unsubscribe()
 	defer func() {
 		if w.current != nil && w.current.state != nil {
 			w.current.state.StopPrefetcher()
@@ -643,13 +645,12 @@ func (w *worker) multiSignLoop() {
 	timer := time.NewTicker(3 * time.Second)
 	defer timer.Stop()
 
-	validatorSignatures := make(map[uint64]map[common.Address][]byte)
+	validatorSignatures := make(map[uint64]map[string]map[common.Address][]byte)
 	multiSignRequestTime := make(map[uint64]time.Time)
 
 	for {
 		select {
 		case block := <-w.mSigCh:
-
 			if block == nil {
 				continue
 			}
@@ -685,21 +686,50 @@ func (w *worker) multiSignLoop() {
 				if signer != res.Signer {
 					continue
 				}
+				number := res.Block.NumberU64()
+				hash := res.Block.Hash().String()
 
-				if validatorSignatures[res.Block.NumberU64()] == nil {
-					validatorSignatures[res.Block.NumberU64()] = make(map[common.Address][]byte)
+				if validatorSignatures[number] == nil {
+					validatorSignatures[number] = make(map[string]map[common.Address][]byte)
 				}
-				validatorSignatures[res.Block.NumberU64()][signer] = res.Signature
+				if validatorSignatures[number][hash] == nil {
+					validatorSignatures[number][hash] = make(map[common.Address][]byte)
+				}
+				validatorSignatures[number][hash][signer] = res.Signature
 
-				if len(validatorSignatures[res.Block.NumberU64()]) >= w.engine.(consensus.PoSA).GetValidatorsCount(w.chain, res.Block)*2/3 {
-
-					res.Block.Header().Extra = append(res.Block.Extra(), res.Block.Header().Hash().Bytes()...)
-					for _, signature := range validatorSignatures[res.Block.NumberU64()] {
-
-						res.Block.Header().Extra = append(res.Block.Extra(), signature...)
+				if len(validatorSignatures[number][hash]) >= w.engine.(consensus.PoSA).GetValidatorsCount(w.chain, res.Block)*2/3 {
+					// Fill signatures into the fixed-size seal area at the end of Extra.
+					// Layout: [extraVanity][validators...][extraSeal slots]
+					header := res.Block.Header()
+					extra := make([]byte, len(header.Extra))
+					copy(extra, header.Extra)
+					// Determine seal area start: last (2/3 of validators) signatures
+					sealAreaSize := crypto.SignatureLength * (w.engine.(consensus.PoSA).GetMaxValidatorsCount(w.chain, res.Block) * 2 / 3)
+					start := len(extra) - sealAreaSize
+					// Zero the seal area first
+					for i := start; i < len(extra); i++ {
+						extra[i] = 0
 					}
-					w.resultCh <- res.Block
-					delete(validatorSignatures, res.Block.NumberU64())
+					// Place proposer signature first
+					if validatorSignatures[number][hash][w.coinbase] != nil {
+						copy(extra[start:start+crypto.SignatureLength], validatorSignatures[number][hash][w.coinbase])
+						// Fill remaining slots with other validators' signatures
+						offset := start + crypto.SignatureLength
+						for addr, sig := range validatorSignatures[number][hash] {
+							if addr == res.Signer {
+								continue
+							}
+							if offset+crypto.SignatureLength > len(extra) {
+								break
+							}
+							copy(extra[offset:offset+crypto.SignatureLength], sig)
+							offset += crypto.SignatureLength
+						}
+						header.Extra = extra
+						updatedBlock := res.Block.WithSeal(header)
+						w.resultCh <- updatedBlock
+						delete(validatorSignatures, number)
+					}
 				}
 			}
 		case <-timer.C:
@@ -740,6 +770,20 @@ func (w *worker) resultLoop() {
 			w.pendingMu.RLock()
 			task, exist := w.pendingTasks[sealhash]
 			w.pendingMu.RUnlock()
+			if !exist {
+				// Fallback: the seal hash may have changed due to Extra modifications. Try to locate by matching number and parent.
+				w.pendingMu.Lock()
+				for _, t := range w.pendingTasks {
+					if t.block.NumberU64() == block.NumberU64() && t.block.ParentHash() == block.ParentHash() {
+						task = t
+						// Alias the new sealhash to this task for future lookups
+						w.pendingTasks[sealhash] = t
+						exist = true
+						break
+					}
+				}
+				w.pendingMu.Unlock()
+			}
 			if !exist {
 				log.Error("Block found but no relative pending task", "number", block.Number(), "sealhash", sealhash, "hash", hash)
 				continue

@@ -170,6 +170,8 @@ type PoSA interface {
 
 	// GetValidatorsCount returns the number of validators.
 	GetValidatorsCount(chain ChainHeaderReader, block *types.Block) int
+
+	GetMaxValidatorsCount(chain ChainHeaderReader, block *types.Block) int
 }
 
 type StateReader interface {

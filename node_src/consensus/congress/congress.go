@@ -164,7 +164,7 @@ type SignTxFn func(account accounts.Account, tx *types.Transaction, chainID *big
 // ecrecover extracts the Ethereum account address from a signed header.
 func ecrecover(header *types.Header, signature []byte, sigcache *lru.ARCCache) (common.Address, error) {
 	// If the signature's already cached, return that
-	hash := header.Hash()
+	hash := header.Hash().String() + ":" + string(signature)
 	if address, known := sigcache.Get(hash); known {
 		return address.(common.Address), nil
 	}
@@ -181,7 +181,6 @@ func ecrecover(header *types.Header, signature []byte, sigcache *lru.ARCCache) (
 	var validator common.Address
 	copy(validator[:], crypto.Keccak256(pubkey[1:])[12:])
 
-	sigcache.Add(hash, validator)
 	return validator, nil
 }
 
@@ -513,9 +512,12 @@ func (c *Congress) verifySeal(chain consensus.ChainHeaderReader, header *types.H
 	signatures := header.Extra[len(header.Extra)-extraSeal:]
 
 	validSignatureCount := 0
-
+	var zeroSig [crypto.SignatureLength]byte
 	for i := 0; i < len(signatures); i += crypto.SignatureLength {
-
+		signature := signatures[i : i+crypto.SignatureLength]
+		if bytes.Equal(signature, zeroSig[:]) {
+			break
+		}
 		signer, err := ecrecover(header, signatures[i:i+crypto.SignatureLength], c.signatures)
 		if err != nil {
 			return err
@@ -1284,6 +1286,10 @@ func (c *Congress) GetValidatorsCount(chain consensus.ChainHeaderReader, block *
 	}
 
 	return len(snap.Validators)
+}
+
+func (c *Congress) GetMaxValidatorsCount(chain consensus.ChainHeaderReader, block *types.Block) int {
+	return maxValidators
 }
 
 // CalcDifficulty is the difficulty adjustment algorithm. It returns the difficulty
