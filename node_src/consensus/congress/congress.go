@@ -540,10 +540,6 @@ func (c *Congress) verifySeal(chain consensus.ChainHeaderReader, header *types.H
 		return err
 	}
 
-	if signer != header.Coinbase {
-		return errInvalidCoinbase
-	}
-
 	if _, ok := snap.Validators[signer]; !ok {
 		return errUnauthorizedValidator
 	}
