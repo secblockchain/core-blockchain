@@ -1,14 +1,15 @@
 package systemcontract
 
 import (
+	"math/big"
+	"strings"
+
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/params"
-	"math/big"
-	"strings"
 )
 
-//changed
+// changed
 // ValidatorsInteractiveABI contains all methods to interactive with validator contracts.
 const ValidatorsInteractiveABI = `[
 	{
@@ -1326,7 +1327,64 @@ const ValidatorsInteractiveABI = `[
 		],
 		"stateMutability": "nonpayable",
 		"type": "function"
-	}
+	},
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "validator",
+          "type": "address"
+        }
+      ],
+      "name": "getStakeOfValidator",
+      "outputs": [
+        {
+          "internalType": "uint256",
+          "name": "",
+          "type": "uint256"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "validator",
+          "type": "address"
+        }
+      ],
+      "name": "isStakeAmountEnough",
+      "outputs": [
+        {
+          "internalType": "bool",
+          "name": "",
+          "type": "bool"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "validator",
+          "type": "address"
+        }
+      ],
+      "name": "isValidatorActive",
+      "outputs": [
+        {
+          "internalType": "bool",
+          "name": "",
+          "type": "bool"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    }
 ]`
 
 const PunishInteractiveABI = `[
@@ -1678,7 +1736,35 @@ const PunishInteractiveABI = `[
 		],
 		"stateMutability": "view",
 		"type": "function"
-	}
+	},
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "validator",
+          "type": "address"
+        },
+        {
+          "internalType": "uint256",
+          "name": "amount",
+          "type": "uint256"
+        },
+        {
+          "internalType": "uint8",
+          "name": "misbehavior",
+          "type": "uint8"
+        },
+        {
+          "internalType": "bytes",
+          "name": "evidence",
+          "type": "bytes"
+        }
+      ],
+      "name": "slashValidator",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    }
 ]`
 
 const ProposalInteractiveABI = `[
@@ -2556,24 +2642,25 @@ const PunishV1InteractiveABI = `[
 
 // DevMappingPosition is the position of the state variable `devs`.
 // Since the state variables are as follow:
-//    bool public initialized;
-//    bool public devVerifyEnabled;
-//    address public admin;
-//    address public pendingAdmin;
 //
-//    mapping(address => bool) private devs;
+//	bool public initialized;
+//	bool public devVerifyEnabled;
+//	address public admin;
+//	address public pendingAdmin;
 //
-//    //NOTE: make sure this list is not too large!
-//    address[] blacksFrom;
-//    address[] blacksTo;
-//    mapping(address => uint256) blacksFromMap;      // address => index+1
-//    mapping(address => uint256) blacksToMap;        // address => index+1
+//	mapping(address => bool) private devs;
 //
-//    uint256 public blackLastUpdatedNumber; // last block number when the black list is updated
-//    uint256 public rulesLastUpdatedNumber;  // last block number when the rules are updated
-//    // event check rules
-//    EventCheckRule[] rules;
-//    mapping(bytes32 => mapping(uint128 => uint256)) rulesMap;   // eventSig => checkIdx => indexInArray+1
+//	//NOTE: make sure this list is not too large!
+//	address[] blacksFrom;
+//	address[] blacksTo;
+//	mapping(address => uint256) blacksFromMap;      // address => index+1
+//	mapping(address => uint256) blacksToMap;        // address => index+1
+//
+//	uint256 public blackLastUpdatedNumber; // last block number when the black list is updated
+//	uint256 public rulesLastUpdatedNumber;  // last block number when the rules are updated
+//	// event check rules
+//	EventCheckRule[] rules;
+//	mapping(bytes32 => mapping(uint128 => uint256)) rulesMap;   // eventSig => checkIdx => indexInArray+1
 //
 // according to [Layout of State Variables in Storage](https://docs.soliditylang.org/en/v0.8.4/internals/layout_in_storage.html),
 // and after optimizer enabled, the `initialized`, `enabled` and `admin` will be packed, and stores at slot 0,

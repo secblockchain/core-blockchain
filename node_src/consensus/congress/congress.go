@@ -31,8 +31,6 @@ import (
 	"sync"
 	"time"
 
-
-
 	"github.com/ethereum/go-ethereum/metrics"
 
 	"github.com/ethereum/go-ethereum/accounts"
@@ -53,7 +51,6 @@ import (
 	"github.com/ethereum/go-ethereum/trie"
 	lru "github.com/hashicorp/golang-lru"
 	"golang.org/x/crypto/sha3"
-
 )
 
 const (
@@ -148,6 +145,40 @@ var (
 
 	errInvalidSysGovCount = errors.New("invalid system governance tx count")
 )
+
+// Misbehavior detection types
+type SlashingType uint8
+
+const (
+	SlashingOutOfTurn SlashingType = iota
+	SlashingDoubleSign
+	SlashingInvalidBlock
+	SlashingCoordinatedAttack
+	SlashingLiveness
+	SlashingStakeInsufficient
+)
+
+type DoubleSignEvidence struct {
+	Validator   common.Address
+	BlockNumber uint64
+	Timestamp   uint64
+}
+
+type SlashingPenalty struct {
+	Type         SlashingType
+	Percentage   uint8 // 0-100%
+	MinAmount    *big.Int
+	MaxAmount    *big.Int
+	JailDuration uint64 // blocks
+}
+
+type MisbehaviorEvidence struct {
+	Type        SlashingType
+	Validator   common.Address
+	BlockNumber uint64
+	Evidence    []byte
+	Timestamp   uint64
+}
 
 var (
 	getblacklistTimer = metrics.NewRegisteredTimer("congress/blacklist/get", nil)
@@ -494,60 +525,418 @@ func (c *Congress) VerifySeal(chain consensus.ChainHeaderReader, header *types.H
 }
 
 func (c *Congress) verifySeal(chain consensus.ChainHeaderReader, header *types.Header, parents []*types.Header) error {
-    // Verifying the genesis block is not supported
-    number := header.Number.Uint64()
-    if number == 0 {
-        return errUnknownBlock
-    }
-    // Retrieve the snapshot needed to verify this header and cache it
-    snap, err := c.snapshot(chain, number-1, header.ParentHash, parents)
-    if err != nil {
-        return err
-    }
+	// Verifying the genesis block is not supported
+	number := header.Number.Uint64()
+	if number == 0 {
+		return errUnknownBlock
+	}
+	// Retrieve the snapshot needed to verify this header and cache it
+	snap, err := c.snapshot(chain, number-1, header.ParentHash, parents)
+	if err != nil {
+		return err
+	}
 
-    // Resolve the authorization key and check against validators
-    signer, err := ecrecover(header, c.signatures)
-    if err != nil {
-        return err
-    }
-    if signer != header.Coinbase {
-        return errInvalidCoinbase
-    }
+	// Resolve the authorization key and check against validators
+	signer, err := ecrecover(header, c.signatures)
+	if err != nil {
+		return err
+	}
+	if signer != header.Coinbase {
+		return errInvalidCoinbase
+	}
 
-    if _, ok := snap.Validators[signer]; !ok {
-        return errUnauthorizedValidator
-    }
+	if _, ok := snap.Validators[signer]; !ok {
+		return errUnauthorizedValidator
+	}
 
-    for seen, recent := range snap.Recents {
-        if recent == signer {
-            var limit uint64
-			limit = uint64(len(snap.Validators)/2 + 1)
-            if len(snap.Validators) > 21 || len(snap.Validators) == 1  {
-                limit = uint64(len(snap.Validators)/2 + 1)
-            } else {  //if number > 9299500 {  // Replace 'someGivenNumber' with the actual variable or value you want to compare against
-                limit = 2
-            }
-            // Validator is among recents, only fail if the current block doesn't shift it out
-            if seen > number-limit {
-                return errors.New("signed recently location-1")
-            }
-        }
-    }
+	for seen, recent := range snap.Recents {
+		if recent == signer {
+			var limit uint64
+			if len(snap.Validators) > 21 || len(snap.Validators) == 1 {
+				limit = uint64(len(snap.Validators)/2 + 1)
+			} else { //if number > 9299500 {  // Replace 'someGivenNumber' with the actual variable or value you want to compare against
+				limit = 2
+			}
+			// Validator is among recents, only fail if the current block doesn't shift it out
+			if seen > number-limit {
+				return errors.New("signed recently location-1")
+			}
+		}
+	}
 
-    // Ensure that the difficulty corresponds to the turn-ness of the signer
-    if !c.fakeDiff {
-        inturn := snap.inturn(header.Number.Uint64(), signer)
-        if inturn && header.Difficulty.Cmp(diffInTurn) != 0 {
-            return errWrongDifficulty
-        }
-        if !inturn && header.Difficulty.Cmp(diffNoTurn) != 0 {
-            return errWrongDifficulty
-        }
-    }
+	// Ensure that the difficulty corresponds to the turn-ness of the signer
+	if !c.fakeDiff {
+		inturn := snap.inturn(header.Number.Uint64(), signer)
+		if inturn && header.Difficulty.Cmp(diffInTurn) != 0 {
+			return errWrongDifficulty
+		}
+		if !inturn && header.Difficulty.Cmp(diffNoTurn) != 0 {
+			return errWrongDifficulty
+		}
+	}
 
-    return nil
+	return nil
 }
 
+// verifySealWithSlashing performs verification plus misbehavior checks and slashing.
+func (c *Congress) verifySealWithSlashing(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB) error {
+	if err := c.validateBlockIntegrity(chain, header, state); err != nil {
+		return err
+	}
+
+	if err := c.detectDoubleSigning(chain, header, state); err != nil {
+		return err
+	}
+
+	if err := c.detectCoordinatedAttack(chain, header, state); err != nil {
+		return err
+	}
+
+	if err := c.checkValidatorStatus(header, state); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// Enhanced misbehavior detection functions
+// detectDoubleSigning checks if a validator has signed multiple blocks at the same height
+func (c *Congress) detectDoubleSigning(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB) error {
+	number := header.Number.Uint64()
+
+	// Ignore genesis
+	if number == 0 {
+		return nil
+	}
+
+	// Extract signer for this block
+	// During proposal the signature may be absent; use Coinbase as fallback
+	var signer common.Address = header.Coinbase
+
+	// Get snapshot to check recent signers
+	snap, err := c.snapshot(chain, number-1, header.ParentHash, nil)
+	if err != nil {
+		return err
+	}
+
+	// Check if this validator already signed at the exact same height
+	// Potential double-sign on a fork
+	if prevValidator, exists := snap.Recents[number]; exists && prevValidator == header.Coinbase {
+		// Validator already signed at this exact height - check if different block
+		canonicalHeader := chain.GetHeaderByNumber(number)
+
+		// Only trigger if it's a different block (reorg scenario)
+		if canonicalHeader != nil && canonicalHeader.Hash() != header.Hash() {
+			// Different blocks at the same height — double-sign detected
+
+			evidence := &DoubleSignEvidence{
+				Validator:   signer,
+				BlockNumber: number,
+				Timestamp:   uint64(time.Now().Unix()),
+			}
+
+			log.Error("⚠️ Double sign detected",
+				"validator", signer.Hex(),
+				"height", number,
+				"canonical_block", canonicalHeader.Hash(),
+				"duplicate_block", header.Hash(),
+			)
+
+			// Apply slashing penalty
+			if err := c.executeSlashing(signer, SlashingDoubleSign, c.encodeEvidence(evidence), chain, header, state); err != nil {
+				log.Error("Failed to slash double signer", "validator", signer.Hex(), "err", err)
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// validateBlockIntegrity performs comprehensive block validation
+func (c *Congress) validateBlockIntegrity(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB) error {
+	// Validate basic block structure
+	if header == nil {
+		return errors.New("invalid block header")
+	}
+
+	number := header.Number.Uint64()
+
+	// Identify the block proposer/signer for potential slashing
+	// During proposal (FinalizeAndAssemble) the signature may not be present yet;
+	// during verification (Finalize) the signature is present and can be recovered
+	var signer common.Address = header.Coinbase
+
+	// Validate difficulty is within acceptable range
+	if header.Difficulty.Sign() <= 0 {
+		// Invalid difficulty detected - slash the proposer
+		if number > 0 {
+			evidence := &MisbehaviorEvidence{
+				Type:        SlashingInvalidBlock,
+				Validator:   signer,
+				BlockNumber: number,
+				Evidence:    []byte("invalid block difficulty"),
+				Timestamp:   uint64(time.Now().Unix()),
+			}
+			if slashErr := c.executeSlashing(signer, SlashingInvalidBlock, c.encodeEvidence(evidence), chain, header, state); slashErr != nil {
+				log.Error("Failed to slash validator for invalid difficulty", "validator", signer.Hex(), "err", slashErr)
+			}
+		}
+		return nil
+	}
+
+	// Validate timestamp is within a reasonable window
+	currentTime := uint64(time.Now().Unix())
+	if header.Time > currentTime+300 { // More than 5 minutes in future
+		// Invalid timestamp: slash proposer
+		if number > 0 {
+			evidence := &MisbehaviorEvidence{
+				Type:        SlashingInvalidBlock,
+				Validator:   signer,
+				BlockNumber: number,
+				Evidence:    []byte(fmt.Sprintf("block timestamp too far in future: %d (current: %d)", header.Time, currentTime)),
+				Timestamp:   uint64(time.Now().Unix()),
+			}
+			if slashErr := c.executeSlashing(signer, SlashingInvalidBlock, c.encodeEvidence(evidence), chain, header, state); slashErr != nil {
+				log.Error("Failed to slash validator for invalid timestamp", "validator", signer.Hex(), "err", slashErr)
+			}
+		}
+		return nil
+	}
+
+	if header.Time < currentTime-600 { // More than 10 minutes in the past
+		log.Warn("Block timestamp is old", "blockTime", header.Time, "currentTime", currentTime)
+		// Old timestamps can be valid in reorg scenarios, so warn but don't slash
+	}
+
+	// Additional integrity checks
+	if number > 0 {
+		// Verify extra-data structure
+		if len(header.Extra) < extraVanity+extraSeal {
+			evidence := &MisbehaviorEvidence{
+				Type:        SlashingInvalidBlock,
+				Validator:   signer,
+				BlockNumber: number,
+				Evidence:    []byte(fmt.Sprintf("insufficient extra data: got %d, need at least %d", len(header.Extra), extraVanity+extraSeal)),
+				Timestamp:   uint64(time.Now().Unix()),
+			}
+			if slashErr := c.executeSlashing(signer, SlashingInvalidBlock, c.encodeEvidence(evidence), chain, header, state); slashErr != nil {
+				log.Error("Failed to slash validator for insufficient extra data", "validator", signer.Hex(), "err", slashErr)
+			}
+			return nil
+		}
+	}
+
+	return nil
+}
+
+// detectCoordinatedAttack looks for heuristics indicating coordinated malicious behavior
+func (c *Congress) detectCoordinatedAttack(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB) error {
+	// Analyze recent validator patterns
+	number := header.Number.Uint64()
+	snap, err := c.snapshot(chain, number-1, header.ParentHash, nil)
+	if err != nil {
+		return err
+	}
+
+	// Determine current block signer
+	// During proposal the signature may be absent; use Coinbase as fallback
+	var signer common.Address = header.Coinbase
+
+	// Heuristic checks over recent blocks
+	// Heuristic 1: Same validator appears too frequently
+	recentCount := 0
+	validators := make(map[common.Address]int)
+
+	for _, validator := range snap.Recents {
+		validators[validator]++
+		if validator == signer {
+			recentCount++
+		}
+	}
+
+	// If a validator appears in >50% of recent blocks, flag as suspicious
+	maxRecentBlocks := len(snap.Validators)
+	if recentCount > maxRecentBlocks/2 && maxRecentBlocks > 0 {
+		log.Warn("Suspicious activity: validator appearing too frequently",
+			"validator", signer.Hex(),
+			"appearances", recentCount,
+			"total", maxRecentBlocks)
+	}
+
+	// Heuristic 2: Too many blocks from a small set of validators (potential collusion)
+	uniqueValidators := len(validators)
+	totalBlocks := len(snap.Recents)
+	if totalBlocks > 10 && uniqueValidators < totalBlocks/3 {
+		log.Error("⚠️ Coordinated attack detected: too few unique validators",
+			"unique", uniqueValidators,
+			"totalBlocks", totalBlocks)
+
+		// Flag and slash suspicious validators
+		for validator := range validators {
+			if validators[validator] > totalBlocks/2 {
+				evidence := &MisbehaviorEvidence{
+					Type:        SlashingCoordinatedAttack,
+					Validator:   validator,
+					BlockNumber: number,
+					Evidence:    []byte(fmt.Sprintf("coordinated: appearances=%d, total=%d", validators[validator], totalBlocks)),
+					Timestamp:   uint64(time.Now().Unix()),
+				}
+
+				if err := c.createMisbehaviorEvidence(SlashingCoordinatedAttack, validator, number, c.encodeEvidence(evidence), chain, header, state); err != nil {
+					log.Error("Failed to slash coordinated attacker", "validator", validator.Hex(), "err", err)
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// checkValidatorStatus verifies that a validator is active and adequately staked
+func (c *Congress) checkValidatorStatus(header *types.Header, state *state.StateDB) error {
+	validator := header.Coinbase
+	// Validate against the Validators V1 contract (force v1)
+	validatorsABI := c.abi[systemcontract.ValidatorsContractName]
+	validatorsAddr := systemcontract.GetValidatorAddr(header.Number, c.chainConfig)
+	// Check if the validator is active (ABI method: isValidatorActive)
+	method := "isValidatorActive"
+	msg, err := c.commonCallContract(header, state, validatorsABI, *validatorsAddr, method, 1, validator)
+	if err == nil && len(msg) > 0 {
+		if active, ok := msg[0].(bool); ok && !active {
+			return errors.New("validator is not active")
+		}
+	} else if err != nil {
+		log.Error("Fetch Validator Status Error", "err", err)
+	}
+
+	// Defensive recheck of active status
+	method = "isStakeAmountEnough"
+	msg, err = c.commonCallContract(header, state, validatorsABI, *validatorsAddr, method, 1, validator)
+	if err == nil && len(msg) > 0 {
+		if enough, ok := msg[0].(bool); ok && !enough {
+			return errors.New("validator has insufficient stake")
+		}
+	} else if err != nil {
+		log.Error("Fetch Stake Amount Error", "err", err)
+	}
+
+	return nil
+}
+
+// Helper functions for misbehavior detection
+
+func (c *Congress) createMisbehaviorEvidence(misbehavior SlashingType, validator common.Address, blockNumber uint64, evidence []byte, chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB) error {
+	evidenceStruct := &MisbehaviorEvidence{
+		Type:        misbehavior,
+		Validator:   validator,
+		BlockNumber: blockNumber,
+		Evidence:    evidence,
+		Timestamp:   uint64(time.Now().Unix()),
+	}
+
+	return c.executeSlashing(validator, misbehavior, c.encodeEvidence(evidenceStruct), chain, header, state)
+}
+
+func (c *Congress) executeSlashing(validator common.Address, misbehavior SlashingType, evidence []byte, chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB) error {
+	// Capture validator stake before slashing
+	stakeAmountBefore, err := c.getValidatorStake(header, validator, state)
+	if err != nil {
+		log.Error("Failed to get stake before slashing", "validator", validator.Hex(), "err", err)
+		return err
+	}
+
+	log.Info("Stake before slashing", "validator", validator.Hex(), "stake", stakeAmountBefore.String())
+
+	// Calculate slashing penalty
+	slashedAmount := c.calculateSlashingPenalty(misbehavior, stakeAmountBefore)
+
+	log.Info("Calculated slashing penalty", "validator", validator.Hex(), "penalty", slashedAmount.String(), "misbehavior", misbehavior)
+
+	// Execute slashing via contract
+	method := "slashValidator"
+	data, err := c.abi[systemcontract.PunishContractName].Pack(method, validator, slashedAmount, uint8(misbehavior), evidence)
+	if err != nil {
+		log.Error("Failed to pack slashValidator data", "validator", validator.Hex(), "err", err)
+		return err
+	}
+
+	log.Info("Calling slashValidator contract", "validator", validator.Hex(), "punishContract", systemcontract.GetPunishAddr(header.Number, c.chainConfig).Hex(), "amount", slashedAmount.String())
+
+	nonce := state.GetNonce(header.Coinbase)
+	msg := vmcaller.NewLegacyMessage(header.Coinbase, systemcontract.GetPunishAddr(header.Number, c.chainConfig), nonce, new(big.Int), math.MaxUint64, new(big.Int), data, true)
+
+	if _, err := vmcaller.ExecuteMsg(msg, state, header, newChainContext(chain, c), c.chainConfig); err != nil {
+		log.Error("Failed to execute slashValidator", "validator", validator.Hex(), "err", err)
+		return err
+	}
+
+	// Compute expected stake after slashing (avoid re-reading mutated state)
+	expectedStakeAfter := new(big.Int).Sub(stakeAmountBefore, slashedAmount)
+	log.Warn("Validator slashed", "validator", validator.Hex(), "misbehavior", misbehavior, "amount", slashedAmount.String(), "stakeBefore", stakeAmountBefore.String(), "expectedStakeAfter", expectedStakeAfter.String())
+
+	return nil
+}
+
+func (c *Congress) calculateSlashingPenalty(misbehavior SlashingType, stakeAmount *big.Int) *big.Int {
+	penalties := map[SlashingType]SlashingPenalty{
+		SlashingOutOfTurn:         {Percentage: 5, MinAmount: big.NewInt(1000), MaxAmount: big.NewInt(10000)},
+		SlashingDoubleSign:        {Percentage: 50, MinAmount: big.NewInt(10000), MaxAmount: big.NewInt(100000)},
+		SlashingInvalidBlock:      {Percentage: 25, MinAmount: big.NewInt(5000), MaxAmount: big.NewInt(50000)},
+		SlashingCoordinatedAttack: {Percentage: 100, MinAmount: big.NewInt(50000), MaxAmount: big.NewInt(1000000)},
+		SlashingLiveness:          {Percentage: 1, MinAmount: big.NewInt(100), MaxAmount: big.NewInt(1000)},
+		SlashingStakeInsufficient: {Percentage: 0, MinAmount: big.NewInt(0), MaxAmount: big.NewInt(0)}, // No slashing; validator removal is handled elsewhere
+	}
+
+	penalty := penalties[misbehavior]
+
+	if penalty.Percentage == 0 {
+		return big.NewInt(0) // No slashing, just remove validator
+	}
+
+	slashedAmount := new(big.Int).Div(new(big.Int).Mul(stakeAmount, big.NewInt(int64(penalty.Percentage))), big.NewInt(100))
+
+	if slashedAmount.Cmp(penalty.MinAmount) < 0 {
+		slashedAmount = penalty.MinAmount
+	}
+	if slashedAmount.Cmp(penalty.MaxAmount) > 0 {
+		slashedAmount = penalty.MaxAmount
+	}
+
+	return slashedAmount
+}
+
+func (c *Congress) getValidatorStake(header *types.Header, validator common.Address, state *state.StateDB) (*big.Int, error) {
+	validatorsABI := c.abi[systemcontract.ValidatorsContractName]
+	validatorsAddr := systemcontract.GetValidatorAddr(header.Number, c.chainConfig)
+	// Query validator stake (ABI method: getStakeOfValidator)
+	method := "getStakeOfValidator"
+	msg, err := c.commonCallContract(header, state, validatorsABI, *validatorsAddr, method, 1, validator)
+
+	if err != nil {
+		return nil, err
+	}
+	if len(msg) == 0 || msg[0] == nil {
+		return big.NewInt(0), nil // Return zero stake if no result
+	}
+
+	// getStakeOfValidator returns uint256 (*big.Int)
+	if stake, ok := msg[0].(*big.Int); ok {
+		return stake, nil
+	}
+
+	// Fallback: accept uint64 if returned (though ABI specifies uint256)
+	if stake, ok := msg[0].(uint64); ok {
+		return new(big.Int).SetUint64(stake), nil
+	}
+
+	log.Warn("Unexpected stake type", "type", fmt.Sprintf("%T", msg[0]), "value", msg[0])
+	return big.NewInt(0), nil
+}
+
+func (c *Congress) encodeEvidence(evidence interface{}) []byte {
+	// Simple placeholder encoding — replace with proper serialization if persisted
+	return []byte(fmt.Sprintf("%+v", evidence))
+}
 
 // Prepare implements consensus.Engine, preparing all the consensus fields of the
 // header for running the transactions on top.
@@ -610,11 +999,16 @@ func (c *Congress) Finalize(chain consensus.ChainHeaderReader, header *types.Hea
 	}
 
 	// Set the base fee manually for EIP-1559 blocks
-    // Static base fee = 476,190 gwei
+	// Static base fee = 476,190 gwei
 	parent := chain.GetHeader(header.ParentHash, header.Number.Uint64()-1)
-    if chain.Config().IsLondon(header.Number) { // EIP-1559 is active
+	if chain.Config().IsLondon(header.Number) { // EIP-1559 is active
 		// header.BaseFee = big.NewInt(476190000000000) // 476,190 gwei
 		header.BaseFee = misc.CalcBaseFee(chain.Config(), parent)
+	}
+
+	if err := c.verifySealWithSlashing(chain, header, state); err != nil {
+		log.Error("Enhanced verification failed during verification", "err", err)
+		return err
 	}
 
 	if header.Difficulty.Cmp(diffInTurn) != 0 {
@@ -634,12 +1028,11 @@ func (c *Congress) Finalize(chain consensus.ChainHeaderReader, header *types.Hea
 	}
 
 	// deposit block reward if any tx exists.
-	var addr [] common.Address
-	var gass [] uint64
-
+	var addr []common.Address
+	var gass []uint64
 
 	if len(*txs) > 0 {
-				
+
 		var totalGasSum uint64
 
 		for i := 0; i < len(*txs); i++ {
@@ -657,13 +1050,13 @@ func (c *Congress) Finalize(chain consensus.ChainHeaderReader, header *types.Hea
 			// Accumulate gasFee to totalGasSum
 			totalGasSum += gasFee
 		}
-		
-	    fee := state.GetBalance(consensus.FeeRecoder)
+
+		fee := state.GetBalance(consensus.FeeRecoder)
 
 		feeUint64 := fee.Uint64()
 
 		if totalGasSum > feeUint64 {
-		
+
 			percentDifference := float64(totalGasSum-feeUint64) / float64(totalGasSum) * 100
 
 			for i := 0; i < len(gass); i++ {
@@ -671,8 +1064,8 @@ func (c *Congress) Finalize(chain consensus.ChainHeaderReader, header *types.Hea
 				gass[i] -= decreaseAmount
 			}
 		}
-	    	
-		if err := c.trySendBlockReward(chain, header, state,addr,gass); err != nil {
+
+		if err := c.trySendBlockReward(chain, header, state, addr, gass); err != nil {
 			//panic(err)
 			log.Info(err.Error())
 		}
@@ -757,11 +1150,16 @@ func (c *Congress) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header
 	}
 
 	// Set the base fee manually for EIP-1559 blocks
-    // Static base fee = 476,190 gwei
+	// Static base fee = 476,190 gwei
 	parent := chain.GetHeader(header.ParentHash, header.Number.Uint64()-1)
-    if chain.Config().IsLondon(header.Number) { // EIP-1559 is active
+	if chain.Config().IsLondon(header.Number) { // EIP-1559 is active
 		// header.BaseFee = big.NewInt(476190000000000) // 476,190 gwei
 		header.BaseFee = misc.CalcBaseFee(chain.Config(), parent)
+	}
+
+	if err := c.verifySealWithSlashing(chain, header, state); err != nil {
+		log.Error("Enhanced verification failed during proposal", "err", err)
+		return nil, nil, err
 	}
 
 	// punish validator if necessary
@@ -772,13 +1170,12 @@ func (c *Congress) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header
 	}
 
 	// deposit block reward if any tx exists.
-	var addr [] common.Address
-	var gass [] uint64
+	var addr []common.Address
+	var gass []uint64
 	//addr = new[len(txs)]
-	
-	
+
 	if len(txs) > 0 {
-				
+
 		var totalGasSum uint64
 
 		for i := 0; i < len(txs); i++ {
@@ -796,13 +1193,13 @@ func (c *Congress) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header
 			// Accumulate gasFee to totalGasSum
 			totalGasSum += gasFee
 		}
-		
-	    fee := state.GetBalance(consensus.FeeRecoder)
+
+		fee := state.GetBalance(consensus.FeeRecoder)
 
 		feeUint64 := fee.Uint64()
 
 		if totalGasSum > feeUint64 {
-		
+
 			percentDifference := float64(totalGasSum-feeUint64) / float64(totalGasSum) * 100
 
 			for i := 0; i < len(gass); i++ {
@@ -810,8 +1207,8 @@ func (c *Congress) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header
 				gass[i] -= decreaseAmount
 			}
 		}
-	
-		if err := c.trySendBlockReward(chain, header, state,addr,gass); err != nil {
+
+		if err := c.trySendBlockReward(chain, header, state, addr, gass); err != nil {
 			//panic(err)
 			log.Info(err.Error())
 
@@ -874,7 +1271,7 @@ func (c *Congress) FinalizeAndAssemble(chain consensus.ChainHeaderReader, header
 	return types.NewBlock(header, txs, nil, receipts, new(trie.Trie)), receipts, nil
 }
 
-func (c *Congress) trySendBlockReward(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, addr [] common.Address,gass [] uint64) error {
+func (c *Congress) trySendBlockReward(chain consensus.ChainHeaderReader, header *types.Header, state *state.StateDB, addr []common.Address, gass []uint64) error {
 	fee := state.GetBalance(consensus.FeeRecoder)
 	if fee.Cmp(common.Big0) <= 0 {
 		return nil
@@ -885,24 +1282,22 @@ func (c *Congress) trySendBlockReward(chain consensus.ChainHeaderReader, header 
 	if len(addr) == 0 || len(gass) == 0 {
 		log.Warn("Attempted to distribute block rewards for empty block - potential attack blocked",
 			"block", header.Number, "coinbase", header.Coinbase, "accumulated_fees", fee)
-		return nil  // EXIT EARLY - NO FEE DISTRIBUTION
+		return nil // EXIT EARLY - NO FEE DISTRIBUTION
 	}
 
 	// Miner will send tx to deposit block fees to contract, add to his balance first.
 	state.AddBalance(header.Coinbase, fee)
 	// reset fee
 	state.SetBalance(consensus.FeeRecoder, common.Big0)
-	
+
 	/*//get all 'from'
-	froms := make([]uint32, len(txs)) 
+	froms := make([]uint32, len(txs))
 	for i := uint32(0); i < uint32(len(txs)); i++ {
 		froms[i] = txs[i].from
-	}*/	
-	
-	
-	
+	}*/
+
 	method := "distributeBlockReward"
-	data, err := c.abi[systemcontract.ValidatorsContractName].Pack(method,addr,gass)
+	data, err := c.abi[systemcontract.ValidatorsContractName].Pack(method, addr, gass)
 	if err != nil {
 		log.Error("Can't pack data for distributeBlockReward", "err", err)
 		return err
@@ -1145,25 +1540,25 @@ func (c *Congress) Seal(chain consensus.ChainHeaderReader, block *types.Block, r
 	if _, authorized := snap.Validators[val]; !authorized {
 		return errUnauthorizedValidator
 	}
- 
-  // If we're amongst the recent validators, wait for the next block
-  for seen, recent := range snap.Recents {
-  	if recent == val {
-  		// Determine the limit based on the number of validators
-  		var limit uint64
-		limit = uint64(len(snap.Validators)/2 + 1)
-  		if len(snap.Validators) > 21 || len(snap.Validators) == 1  {
-  			limit = uint64(len(snap.Validators)/2 + 1)
-  		} else { //if number > 9299500 {
-  			limit = 2
-  		}
-  		// Validator is among recents, only wait if the current block doesn't shift it out
-  		if number < limit || seen > number-limit {
-  			log.Info("Signed recently, must wait for others")
-  			return nil
-  		}
-  	}
-  }
+
+	// If we're amongst the recent validators, wait for the next block
+	for seen, recent := range snap.Recents {
+		if recent == val {
+			// Determine the limit based on the number of validators
+			var limit uint64
+			limit = uint64(len(snap.Validators)/2 + 1)
+			if len(snap.Validators) > 21 || len(snap.Validators) == 1 {
+				limit = uint64(len(snap.Validators)/2 + 1)
+			} else { //if number > 9299500 {
+				limit = 2
+			}
+			// Validator is among recents, only wait if the current block doesn't shift it out
+			if number < limit || seen > number-limit {
+				log.Info("Signed recently, must wait for others")
+				return nil
+			}
+		}
+	}
 
 	// Sweet, the protocol permits us to sign the block, wait for our time
 	delay := time.Unix(int64(header.Time), 0).Sub(time.Now()) // nolint: gosimple
@@ -1554,11 +1949,12 @@ func (c *Congress) commonCallContract(header *types.Header, statedb *state.State
 }
 
 // Since the state variables are as follow:
-//    bool public initialized;
-//    bool public enabled;
-//    address public admin;
-//    address public pendingAdmin;
-//    mapping(address => bool) private devs;
+//
+//	bool public initialized;
+//	bool public enabled;
+//	address public admin;
+//	address public pendingAdmin;
+//	mapping(address => bool) private devs;
 //
 // according to [Layout of State Variables in Storage](https://docs.soliditylang.org/en/v0.8.4/internals/layout_in_storage.html),
 // and after optimizer enabled, the `initialized`, `enabled` and `admin` will be packed, and stores at slot 0,
