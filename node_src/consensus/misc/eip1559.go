@@ -47,12 +47,12 @@ func VerifyEip1559Header(config *params.ChainConfig, parent, header *types.Heade
 	// 	return fmt.Errorf("invalid baseFee: have %s, want %s, parentBaseFee %s, parentGasUsed %d",
 	// 		expectedBaseFee, header.BaseFee, parent.BaseFee, parent.GasUsed)
 	// }
-	
+
 
 	return nil
 }
 
 func CalcBaseFee(config *params.ChainConfig, parent *types.Header) *big.Int {
-	baseFee := new(big.Int).Div(new(big.Int).Mul(big.NewInt(100), big.NewInt(1e18)), big.NewInt(int64(params.TxGas)))
+	baseFee := new(big.Int).Div(new(big.Int).Mul(big.NewInt(50), big.NewInt(1e18)), big.NewInt(int64(params.TxGas)))
 	return baseFee
 }
