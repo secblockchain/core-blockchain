@@ -34,7 +34,7 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/docker/docker/pkg/reexec"
+	"github.com/ethereum/go-ethereum/internal/reexec"
 )
 
 func NewTestCmd(t *testing.T, data interface{}) *TestCmd {
