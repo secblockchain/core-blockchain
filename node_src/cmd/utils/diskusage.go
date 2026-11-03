@@ -15,8 +15,8 @@
 // along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
 // bug across the entire project files fixed and high tx per block feature added  by EtherAuthority <https://etherauthority.io/>
 
-//go:build !windows && !openbsd
-// +build !windows,!openbsd
+//go:build !windows && !openbsd && !freebsd && !dragonfly
+// +build !windows,!openbsd,!freebsd,!dragonfly
 
 package utils
 
@@ -32,13 +32,7 @@ func getFreeDiskSpace(path string) (uint64, error) {
 		return 0, fmt.Errorf("failed to call Statfs: %v", err)
 	}
 
-	// Available blocks * size per block = available space in bytes
-	var bavail = stat.Bavail
-	if stat.Bavail < 0 {
-		// FreeBSD can have a negative number of blocks available
-		// because of the grace limit.
-		bavail = 0
-	}
-	//nolint:unconvert
-	return uint64(bavail) * uint64(stat.Bsize), nil
+	// Available blocks * size per block = available space in bytes.
+	// Bavail is unsigned on these platforms.
+	return uint64(stat.Bavail) * uint64(stat.Bsize), nil
 }

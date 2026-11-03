@@ -4,7 +4,7 @@ ARG VERSION=""
 ARG BUILDNUM=""
 
 # Build Geth in a stock Go builder container
-FROM golang:1.16-buster as builder
+FROM golang:1.26.10-bookworm as builder
 
 ADD . /go-ethereum
 RUN cd /go-ethereum && go run build/ci.go install ./cmd/geth
